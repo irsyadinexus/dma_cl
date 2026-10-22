@@ -24,20 +24,37 @@ module chan_arbiter #(
   logic [CH_WIDTH-1:0] gnt;
   logic                gnt_valid;
   logic                in_burst;
+  logic [CH_WIDTH-1:0] burst_ch;
 
   // Round-robin pointer
   logic [CH_WIDTH-1:0] rr_ptr;
 
+  // Helper function: select next requesting channel
+  function automatic logic [CH_WIDTH-1:0] pick_grant(
+    input  logic [CH_WIDTH-1:0]    ptr,
+    input  dma_pkg::pcie_req_bus_t reqs [NUM_CH],
+    output logic                   valid
+  );
+    logic [CH_WIDTH-1:0] chosen;
+    valid = 1'b0;
+    chosen = ptr;
+    for (int i = 0; i < NUM_CH; i++) begin
+      int unsigned idx = (int'(ptr) + i) % NUM_CH;
+      if (reqs[idx].valid && !valid) begin
+        chosen = CH_WIDTH'(idx);
+        valid = 1'b1;
+      end
+    end
+    return chosen;
+  endfunction
+
   // Request arbitration logic
   always_comb begin
-    gnt = rr_ptr;
-    gnt_valid = 1'b0;
-    for (int i = 0; i < NUM_CH; i++) begin
-      int unsigned idx = (int'(rr_ptr) + i) % NUM_CH;
-      if (ch_req[idx].valid && !gnt_valid) begin
-        gnt = CH_WIDTH'(idx);
-        gnt_valid = 1'b1;
-      end
+    if (in_burst) begin
+      gnt       = burst_ch;
+      gnt_valid = ch_req[burst_ch].valid;
+    end else begin
+      gnt       = pick_grant(rr_ptr, ch_req, gnt_valid);
     end
   end
 
@@ -46,10 +63,12 @@ module chan_arbiter #(
     if (!core_rst_n) begin
       rr_ptr   <= '0;
       in_burst <= 1'b0;
+      burst_ch <= '0;
     end else begin
       if (gnt_valid && m_req_ready) begin
         if (!ch_req[gnt].req.is_read && !ch_req[gnt].wlast) begin
           in_burst <= 1'b1;
+          burst_ch <= gnt;
         end else begin
           in_burst <= 1'b0;
           rr_ptr   <= (gnt == CH_WIDTH'(NUM_CH - 1)) ? '0 : gnt + 1'b1;
