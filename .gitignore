@@ -1,0 +1,19 @@
+# Build artifacts
+obj_dir/
+build/
+*.vvp
+*.o
+*.a
+*.d
+
+# Simulation waveforms & logs
+*.vcd
+*.fst
+*.log
+
+# Editor & OS temporary files
+*~
+*.swp
+*.swo
+*.Zone.Identifier
+.DS_Store
