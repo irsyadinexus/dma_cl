@@ -17,3 +17,6 @@ build/
 *.swo
 *.Zone.Identifier
 .DS_Store
+
+# Superpowers scratch
+.superpowers/
