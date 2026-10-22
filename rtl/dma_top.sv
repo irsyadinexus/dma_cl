@@ -1,81 +1,81 @@
 // ============================================================================
-// dma_top.sv — PCIe Gen4 HDMA-native scatter-gather DMA engine, top level.
-//
-// Datapath pipeline:
-//   dma_channel[N] --req--> chan_arbiter --> ats_pri_subsys --> dwc_paa <=> DWC
-//                    <--cpl--            <--             <--
-// Control plane:
-//   host BAR --(DWC)--> dwc_paa completer --APB--> csr_block --ctrl/stat--> chan[N]
-//
-// Module boundaries use packed-struct bundles (dma_pkg) for tool portability
-// (Verilator + Icarus + commercial) and synthesis. The rtl/if/*.sv interfaces
-// mirror these bundles 1:1 for TB/BFM use. M1 blocks are structural stubs.
+// dma_top.sv — IP-Agnostic PCIe Gen4 HDMA-native Scatter-Gather DMA Top Level.
+// Synthesizable, vendor-independent core.
 // ============================================================================
 module dma_top (
-  // ---- clocks / resets ----
-  input  logic pcie_app_clk,   // DWC application clock (~500 MHz)
-  input  logic pcie_app_rst_n,
-  input  logic core_clk,       // DMA datapath
+  // ---- Clocks & Resets ----
+  input  logic core_clk,       // DMA datapath clock (~500 MHz)
   input  logic core_rst_n,
-  input  logic axi_clk,        // device-side AXI
+  input  logic axi_clk,        // Device-side AXI clock
   input  logic axi_rst_n,
-  input  logic csr_clk,        // register access
+  input  logic csr_clk,        // Register access clock
   input  logic csr_rst_n,
 
-  // ---- DWC controller status (native app bus attaches in dwc_paa) ----
-  input  logic dwc_link_up,
+  // ---- Host PCIe Transaction Requester (Master Out) ----
+  output dma_pkg::pcie_req_bus_t host_req,
+  input  logic                   host_req_ready,
 
-  // ---- device-side AXI4-MM, per channel ----
+  // ---- Host PCIe Transaction Completion (Slave In) ----
+  input  dma_pkg::pcie_cpl_bus_t host_cpl,
+  output logic                   host_cpl_ready,
+
+  // ---- Host CSR APB Slave Interface (BAR0) ----
+  input  logic [19:0]            s_apb_paddr,
+  input  logic                   s_apb_psel,
+  input  logic                   s_apb_penable,
+  input  logic                   s_apb_pwrite,
+  input  logic [31:0]            s_apb_pwdata,
+  input  logic [3:0]             s_apb_pstrb,
+  output logic [31:0]            s_apb_prdata,
+  output logic                   s_apb_pready,
+  output logic                   s_apb_pslverr,
+
+  // ---- Device-side AXI4-MM, per channel ----
   output dma_pkg::axi_mm_m2s_t dev_mm_m2s     [dma_pkg::NUM_RD_CH + dma_pkg::NUM_WR_CH],
   input  dma_pkg::axi_mm_s2m_t dev_mm_s2m     [dma_pkg::NUM_RD_CH + dma_pkg::NUM_WR_CH],
 
-  // ---- device-side AXI4-Stream, per channel (H2C: st_o ; C2H: st_i) ----
+  // ---- Device-side AXI4-Stream, per channel ----
   output dma_pkg::axis_data_t  dev_st_o       [dma_pkg::NUM_RD_CH + dma_pkg::NUM_WR_CH],
   input  logic                 dev_st_o_ready [dma_pkg::NUM_RD_CH + dma_pkg::NUM_WR_CH],
   input  dma_pkg::axis_data_t  dev_st_i       [dma_pkg::NUM_RD_CH + dma_pkg::NUM_WR_CH],
-  output logic                 dev_st_i_ready [dma_pkg::NUM_RD_CH + dma_pkg::NUM_WR_CH]
+  output logic                 dev_st_i_ready [dma_pkg::NUM_RD_CH + dma_pkg::NUM_WR_CH],
+
+  // ---- Interrupts & MSI Configuration ----
+  output logic                 ch_irq         [dma_pkg::NUM_RD_CH + dma_pkg::NUM_WR_CH],
+  output dma_pkg::ch_msi_t     ch_msi         [dma_pkg::NUM_RD_CH + dma_pkg::NUM_WR_CH]
 );
   import dma_pkg::*;
 
   localparam int NUM_CH = NUM_RD_CH + NUM_WR_CH;
   localparam int APB_AW = 20;
 
-  // ---- internal buses ----
+  // Internal per-channel request and completion buses
   pcie_req_bus_t ch_req       [NUM_CH];
   logic          ch_req_ready [NUM_CH];
   pcie_cpl_bus_t ch_cpl       [NUM_CH];
   logic          ch_cpl_ready [NUM_CH];
 
-  pcie_req_bus_t arb_req;  logic arb_req_ready;
-  pcie_cpl_bus_t arb_cpl;  logic arb_cpl_ready;
-  pcie_req_bus_t paa_req;  logic paa_req_ready;
-  pcie_cpl_bus_t paa_cpl;  logic paa_cpl_ready;
+  // Merged arbiter request/completion buses
+  pcie_req_bus_t arb_req;
+  logic          arb_req_ready;
+  pcie_cpl_bus_t arb_cpl;
+  logic          arb_cpl_ready;
 
+  // Unused ATS sideband buses in M2
   ats_pri_up_t   ats_up;
   ats_pri_dn_t   ats_dn;
+  assign ats_dn = '0;
 
   ch_ctrl_t      ch_ctrl [NUM_CH];
   ch_stat_t      ch_stat [NUM_CH];
-  ch_msi_t       ch_msi  [NUM_CH];
-  logic          ch_irq  [NUM_CH];
-
-  logic          fc_np_ok, fc_p_ok;
   logic          rd_en, wr_en, soft_reset;
 
-  // APB: PAA completer -> CSR
-  logic [APB_AW-1:0] apb_paddr;
-  logic              apb_psel, apb_penable, apb_pwrite;
-  logic [31:0]       apb_pwdata;
-  logic [3:0]        apb_pstrb;
-  logic [31:0]       apb_prdata;
-  logic              apb_pready, apb_pslverr;
-
-  // ---- per-channel movers ----
+  // ---- Per-Channel Movers ----
   genvar g;
   generate
     for (g = 0; g < NUM_CH; g++) begin : g_chan
       dma_channel #(
-        .IS_WRITE   (g >= NUM_RD_CH)   // first NUM_RD_CH are Read/H2C
+        .IS_WRITE   (g >= NUM_RD_CH)
       ) u_chan (
         .core_clk   (core_clk),
         .core_rst_n (core_rst_n),
@@ -97,7 +97,7 @@ module dma_top (
     end
   endgenerate
 
-  // ---- arbiter / QoS + completion demux ----
+  // ---- Arbiter (Multiplex Requests, Demux Completions) ----
   chan_arbiter #(.NUM_CH(NUM_CH)) u_arb (
     .core_clk     (core_clk),
     .core_rst_n   (core_rst_n),
@@ -111,7 +111,7 @@ module dma_top (
     .m_cpl_ready  (arb_cpl_ready)
   );
 
-  // ---- ATS/PASID/PRI (transparent stub at M1) ----
+  // ---- ATS/PASID/PRI Subsystem (Transparent Passthrough in M2) ----
   ats_pri_subsys u_ats (
     .core_clk     (core_clk),
     .core_rst_n   (core_rst_n),
@@ -119,57 +119,29 @@ module dma_top (
     .up_req_ready (arb_req_ready),
     .up_cpl       (arb_cpl),
     .up_cpl_ready (arb_cpl_ready),
-    .dn_req       (paa_req),
-    .dn_req_ready (paa_req_ready),
-    .dn_cpl       (paa_cpl),
-    .dn_cpl_ready (paa_cpl_ready),
+    .dn_req       (host_req),
+    .dn_req_ready (host_req_ready),
+    .dn_cpl       (host_cpl),
+    .dn_cpl_ready (host_cpl_ready),
     .ats_up       (ats_up),
     .ats_dn       (ats_dn),
     .ats_en       (1'b0),
     .pri_en       (1'b0)
   );
 
-  // ---- DWC PCIe application adapter ----
-  dwc_paa #(.NUM_CH(NUM_CH), .APB_AW(APB_AW)) u_paa (
-    .pcie_app_clk   (pcie_app_clk),
-    .pcie_app_rst_n (pcie_app_rst_n),
-    .core_clk       (core_clk),
-    .core_rst_n     (core_rst_n),
-    .link_up        (dwc_link_up),
-    .ch_msi         (ch_msi),
-    .ch_irq         (ch_irq),
-    .req            (paa_req),
-    .req_ready      (paa_req_ready),
-    .cpl            (paa_cpl),
-    .cpl_ready      (paa_cpl_ready),
-    .fc_np_ok       (fc_np_ok),
-    .fc_p_ok        (fc_p_ok),
-    .ats_up         (ats_up),
-    .ats_dn         (ats_dn),
-    .csr_paddr      (apb_paddr),
-    .csr_psel       (apb_psel),
-    .csr_penable    (apb_penable),
-    .csr_pwrite     (apb_pwrite),
-    .csr_pwdata     (apb_pwdata),
-    .csr_pstrb      (apb_pstrb),
-    .csr_prdata     (apb_prdata),
-    .csr_pready     (apb_pready),
-    .csr_pslverr    (apb_pslverr)
-  );
-
-  // ---- CSR / register block ----
+  // ---- CSR Register Block (Connected Directly to Top APB) ----
   csr_block #(.NUM_RD_CH(NUM_RD_CH), .NUM_WR_CH(NUM_WR_CH), .APB_AW(APB_AW)) u_csr (
     .csr_clk      (csr_clk),
     .csr_rst_n    (csr_rst_n),
-    .paddr        (apb_paddr),
-    .psel         (apb_psel),
-    .penable      (apb_penable),
-    .pwrite       (apb_pwrite),
-    .pwdata       (apb_pwdata),
-    .pstrb        (apb_pstrb),
-    .prdata       (apb_prdata),
-    .pready       (apb_pready),
-    .pslverr      (apb_pslverr),
+    .paddr        (s_apb_paddr),
+    .psel         (s_apb_psel),
+    .penable      (s_apb_penable),
+    .pwrite       (s_apb_pwrite),
+    .pwdata       (s_apb_pwdata),
+    .pstrb        (s_apb_pstrb),
+    .prdata       (s_apb_prdata),
+    .pready       (s_apb_pready),
+    .pslverr      (s_apb_pslverr),
     .ch_ctrl      (ch_ctrl),
     .ch_stat      (ch_stat),
     .ch_msi       (ch_msi),

@@ -5,7 +5,6 @@ PKG     := rtl/dma_pkg.sv
 BLOCKS  := rtl/blocks/dma_channel.sv \
            rtl/blocks/chan_arbiter.sv \
            rtl/blocks/ats_pri_subsys.sv \
-           rtl/blocks/dwc_paa.sv \
            rtl/blocks/csr_block.sv
 TOP     := rtl/dma_top.sv
 IFS     := rtl/if/pcie_req_if.sv \
