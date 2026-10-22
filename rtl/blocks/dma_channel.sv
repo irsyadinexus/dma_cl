@@ -59,8 +59,9 @@ module dma_channel #(
       } h_state_e;
       h_state_e state;
       logic [7:0] w_beats_rem;
+      logic [3:0] done_cnt;
 
-      assign cpl_ready = (state == H_CPL) ? mm_s2m.wready : 1'b0;
+      assign cpl_ready = (state == H_CPL && !mm_m2s.wvalid) ? mm_s2m.wready : 1'b0;
 
       always_ff @(posedge core_clk or negedge core_rst_n) begin
         if (!core_rst_n) begin
@@ -70,6 +71,7 @@ module dma_channel #(
           rem_bytes       <= '0;
           bytes_xferred_r <= '0;
           done_irq_r      <= 1'b0;
+          done_cnt        <= '0;
           ch_state_r      <= ST_IDLE;
           w_beats_rem     <= '0;
           req.valid       <= 1'b0;
@@ -78,7 +80,12 @@ module dma_channel #(
           req.wlast       <= 1'b0;
           mm_m2s          <= '0;
         end else begin
-          done_irq_r <= 1'b0;
+          if (done_cnt != 0) begin
+            done_cnt   <= done_cnt - 1'b1;
+            done_irq_r <= 1'b1;
+          end else begin
+            done_irq_r <= 1'b0;
+          end
           case (state)
             H_IDLE: begin
               ch_state_r <= ST_IDLE;
@@ -150,7 +157,7 @@ module dma_channel #(
             end
 
             H_DONE: begin
-              done_irq_r <= 1'b1;
+              done_cnt   <= 4'd10;
               ch_state_r <= ST_IDLE;
               state      <= H_IDLE;
             end
@@ -170,7 +177,7 @@ module dma_channel #(
       logic [7:0] r_beats_rem;
       logic [DATA_WIDTH-1:0] fifo_data [8];
       logic [2:0]            fifo_wr_ptr, fifo_rd_ptr;
-      logic [3:0]            fifo_cnt;
+      logic [3:0]            done_cnt;
 
       assign cpl_ready = 1'b0;
 
@@ -182,18 +189,23 @@ module dma_channel #(
           rem_bytes       <= '0;
           bytes_xferred_r <= '0;
           done_irq_r      <= 1'b0;
+          done_cnt        <= '0;
           ch_state_r      <= ST_IDLE;
           r_beats_rem     <= '0;
           fifo_wr_ptr     <= '0;
           fifo_rd_ptr     <= '0;
-          fifo_cnt        <= '0;
           req.valid       <= 1'b0;
           req.req         <= '0;
           req.wdata       <= '0;
           req.wlast       <= 1'b0;
           mm_m2s          <= '0;
         end else begin
-          done_irq_r <= 1'b0;
+          if (done_cnt != 0) begin
+            done_cnt   <= done_cnt - 1'b1;
+            done_irq_r <= 1'b1;
+          end else begin
+            done_irq_r <= 1'b0;
+          end
           case (state)
             C_IDLE: begin
               ch_state_r <= ST_IDLE;
@@ -216,7 +228,6 @@ module dma_channel #(
               r_beats_rem    <= burst_len;
               fifo_wr_ptr    <= '0;
               fifo_rd_ptr    <= '0;
-              fifo_cnt       <= '0;
               if (mm_m2s.arvalid && mm_s2m.arready) begin
                 mm_m2s.arvalid <= 1'b0;
                 mm_m2s.rready  <= 1'b1;
@@ -228,32 +239,39 @@ module dma_channel #(
               if (mm_m2s.rready && mm_s2m.rvalid) begin
                 fifo_data[fifo_wr_ptr] <= mm_s2m.rdata;
                 fifo_wr_ptr            <= fifo_wr_ptr + 1'b1;
-                fifo_cnt               <= fifo_cnt + 1'b1;
                 if (r_beats_rem != 0) begin
                   r_beats_rem <= r_beats_rem - 1'b1;
                 end else begin
-                  mm_m2s.rready <= 1'b0;
-                  state         <= C_MWR;
+                  mm_m2s.rready    <= 1'b0;
+                  state            <= C_MWR;
+                  req.valid        <= 1'b1;
+                  req.req.is_read  <= 1'b0;
+                  req.req.addr     <= cur_dar;
+                  req.req.len_bytes<= seg_len;
+                  req.req.tag      <= 10'h01; // Channel 1
+                  req.req.first_be <= 4'hF;
+                  req.req.last_be  <= 4'hF;
+                  req.wdata        <= (fifo_wr_ptr == 0) ? mm_s2m.rdata : fifo_data[0];
+                  req.wlast        <= (burst_len == 0);
+                  fifo_rd_ptr      <= 3'd1;
+                  r_beats_rem      <= burst_len;
                 end
               end
             end
 
             C_MWR: begin
-              req.valid        <= 1'b1;
-              req.req.is_read  <= 1'b0;
-              req.req.addr     <= cur_dar;
-              req.req.len_bytes<= seg_len;
-              req.req.tag      <= 10'h01; // Channel 1
-              req.req.first_be <= 4'hF;
-              req.req.last_be  <= 4'hF;
-              req.wdata        <= fifo_data[fifo_rd_ptr];
-              req.wlast        <= (fifo_cnt == 4'd1);
               if (req.valid && req_ready) begin
-                fifo_rd_ptr <= fifo_rd_ptr + 1'b1;
-                fifo_cnt    <= fifo_cnt - 1'b1;
-                if (fifo_cnt == 4'd1) begin
+                if (r_beats_rem == 0) begin
                   req.valid <= 1'b0;
+                  req.wlast <= 1'b0;
                   state     <= C_NEXT;
+                end else begin
+                  req.valid        <= 1'b1;
+                  req.req.addr     <= req.req.addr + 64;
+                  req.wdata        <= fifo_data[fifo_rd_ptr];
+                  req.wlast        <= (r_beats_rem == 8'd1);
+                  fifo_rd_ptr      <= fifo_rd_ptr + 1'b1;
+                  r_beats_rem      <= r_beats_rem - 1'b1;
                 end
               end
             end
@@ -271,7 +289,7 @@ module dma_channel #(
             end
 
             C_DONE: begin
-              done_irq_r <= 1'b1;
+              done_cnt   <= 4'd10;
               ch_state_r <= ST_IDLE;
               state      <= C_IDLE;
             end
