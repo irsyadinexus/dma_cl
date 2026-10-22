@@ -82,7 +82,7 @@ module dma_channel #(
           case (state)
             H_IDLE: begin
               ch_state_r <= ST_IDLE;
-              if (ctrl.enable && ctrl.doorbell) begin
+              if (ctrl.enable && ctrl.doorbell && ctrl.xfer_size != 0) begin
                 cur_sar         <= ctrl.sar;
                 cur_dar         <= ctrl.dar;
                 rem_bytes       <= ctrl.xfer_size;
@@ -168,9 +168,9 @@ module dma_channel #(
       } c_state_e;
       c_state_e state;
       logic [7:0] r_beats_rem;
-      logic [DATA_WIDTH-1:0] fifo_data [4];
-      logic [1:0] fifo_wr_ptr, fifo_rd_ptr;
-      logic [2:0] fifo_cnt;
+      logic [DATA_WIDTH-1:0] fifo_data [8];
+      logic [2:0]            fifo_wr_ptr, fifo_rd_ptr;
+      logic [3:0]            fifo_cnt;
 
       assign cpl_ready = 1'b0;
 
@@ -197,7 +197,7 @@ module dma_channel #(
           case (state)
             C_IDLE: begin
               ch_state_r <= ST_IDLE;
-              if (ctrl.enable && ctrl.doorbell) begin
+              if (ctrl.enable && ctrl.doorbell && ctrl.xfer_size != 0) begin
                 cur_sar         <= ctrl.sar;
                 cur_dar         <= ctrl.dar;
                 rem_bytes       <= ctrl.xfer_size;
@@ -247,11 +247,11 @@ module dma_channel #(
               req.req.first_be <= 4'hF;
               req.req.last_be  <= 4'hF;
               req.wdata        <= fifo_data[fifo_rd_ptr];
-              req.wlast        <= (fifo_cnt == 1);
+              req.wlast        <= (fifo_cnt == 4'd1);
               if (req.valid && req_ready) begin
                 fifo_rd_ptr <= fifo_rd_ptr + 1'b1;
                 fifo_cnt    <= fifo_cnt - 1'b1;
-                if (fifo_cnt == 1) begin
+                if (fifo_cnt == 4'd1) begin
                   req.valid <= 1'b0;
                   state     <= C_NEXT;
                 end
