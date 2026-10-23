@@ -98,10 +98,18 @@ module dma_top (
     end
   endgenerate
 
-  // ---- Arbiter (Multiplex Requests, Demux Completions) ----
+  // ---- Arbiter (Multiplex Requests, Demux Completions, WRR QoS) ----
+  logic [3:0] ch_qos [NUM_CH];
+  always_comb begin
+    for (int i = 0; i < NUM_CH; i++) begin
+      ch_qos[i] = ch_ctrl[i].qos;
+    end
+  end
+
   chan_arbiter #(.NUM_CH(NUM_CH)) u_arb (
     .core_clk     (core_clk),
     .core_rst_n   (core_rst_n),
+    .ch_qos       (ch_qos),
     .ch_req       (ch_req),
     .ch_req_ready (ch_req_ready),
     .ch_cpl       (ch_cpl),
