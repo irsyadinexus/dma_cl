@@ -37,10 +37,18 @@ interface ats_pri_if (input logic clk, input logic rst_n);
   logic [8:0]              pri_rsp_prg_idx;
   logic [3:0]              pri_rsp_code;    // success / invalid / failure ⚑RECONCILE
 
+  // ---- Host IOMMU Invalidation Messages (PAA -> ATS/PRI subsystem) ----
+  logic                    inval_valid;
+  logic [PASID_W-1:0]      inval_pasid;
+  logic                    inval_pasid_en;
+  logic                    inval_global;
+  logic [63:0]             inval_addr;
+
   modport agent (   // ATS/PASID/PRI subsystem side
     input  clk, rst_n,
     input  ats_req_ready, ats_rsp_valid, ats_rsp_id, ats_rsp,
     input  pri_req_ready, pri_rsp_valid, pri_rsp_prg_idx, pri_rsp_code,
+    input  inval_valid, inval_pasid, inval_pasid_en, inval_global, inval_addr,
     output ats_req_valid, ats_req_addr, ats_req_pasid, ats_req_pasid_en,
     output ats_req_is_write, ats_req_id, ats_rsp_ready,
     output pri_req_valid, pri_req_addr, pri_req_pasid, pri_req_pasid_en,
@@ -54,7 +62,8 @@ interface ats_pri_if (input logic clk, input logic rst_n);
     input  pri_req_valid, pri_req_addr, pri_req_pasid, pri_req_pasid_en,
     input  pri_req_rd, pri_req_wr, pri_req_prg_idx, pri_rsp_ready,
     output ats_req_ready, ats_rsp_valid, ats_rsp_id, ats_rsp,
-    output pri_req_ready, pri_rsp_valid, pri_rsp_prg_idx, pri_rsp_code
+    output pri_req_ready, pri_rsp_valid, pri_rsp_prg_idx, pri_rsp_code,
+    output inval_valid, inval_pasid, inval_pasid_en, inval_global, inval_addr
   );
 
 endinterface : ats_pri_if

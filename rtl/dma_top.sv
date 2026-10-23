@@ -120,30 +120,32 @@ module dma_top (
     .m_cpl_ready  (arb_cpl_ready)
   );
 
-  // ---- ATS/PASID/PRI Subsystem (Transparent Passthrough in M2) ----
-  ats_pri_subsys u_ats (
-    .core_clk     (core_clk),
-    .core_rst_n   (core_rst_n),
-    .up_req       (arb_req),
-    .up_req_ready (arb_req_ready),
-    .up_cpl       (arb_cpl),
-    .up_cpl_ready (arb_cpl_ready),
-    .dn_req       (host_req),
-    .dn_req_ready (host_req_ready),
-    .dn_cpl       (host_cpl),
-    .dn_cpl_ready (host_cpl_ready),
-    .ats_up       (ats_up),
-    .ats_dn       (ats_dn),
-    .ats_en       (1'b0),
-    .pri_en       (1'b0)
-  );
-
   // ---- ATS/ATC CSR Interface Signals ----
   logic [31:0]          ats_ctrl;
   logic [31:0]          atc_inval;
   logic                 atc_inval_pulse;
   dma_pkg::atc_status_t atc_stat;
-  assign atc_stat = '0;
+
+  // ---- ATS/PASID/PRI Subsystem (Milestone M4) ----
+  ats_pri_subsys u_ats (
+    .core_clk        (core_clk),
+    .core_rst_n      (core_rst_n),
+    .up_req          (arb_req),
+    .up_req_ready    (arb_req_ready),
+    .up_cpl          (arb_cpl),
+    .up_cpl_ready    (arb_cpl_ready),
+    .dn_req          (host_req),
+    .dn_req_ready    (host_req_ready),
+    .dn_cpl          (host_cpl),
+    .dn_cpl_ready    (host_cpl_ready),
+    .ats_up          (ats_up),
+    .ats_dn          (ats_dn),
+    .ats_en          (ats_ctrl[0]),
+    .pri_en          (1'b0),
+    .atc_inval_reg   (atc_inval),
+    .atc_inval_pulse (atc_inval_pulse),
+    .atc_stat        (atc_stat)
+  );
 
   // ---- CSR Register Block (Connected Directly to Top APB) ----
   csr_block #(.NUM_RD_CH(NUM_RD_CH), .NUM_WR_CH(NUM_WR_CH), .APB_AW(APB_AW)) u_csr (

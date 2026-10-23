@@ -217,6 +217,12 @@ package dma_pkg;
     logic                pri_rsp_valid;
     logic [8:0]          pri_rsp_prg_idx;
     logic [3:0]          pri_rsp_code;
+    // Host IOMMU Invalidation Messages (M4)
+    logic                inval_valid;
+    logic [PASID_W-1:0]  inval_pasid;
+    logic                inval_pasid_en;
+    logic                inval_global;
+    logic [63:0]         inval_addr;
   } ats_pri_dn_t;     // PAA -> subsystem
 
   // ---- AXI4-MM device bus (split by drive direction) ----
