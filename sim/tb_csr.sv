@@ -23,18 +23,27 @@ module tb_csr;
   ch_msi_t  ch_msi  [NCH];
   logic     ch_irq  [NCH];
   logic     rd_en, wr_en, soft_reset;
+  logic [31:0] ats_ctrl;
+  logic [31:0] atc_inval;
+  logic        atc_inval_pulse;
+  atc_status_t atc_stat;
 
   csr_block #(.NUM_RD_CH(NRD), .NUM_WR_CH(NWR), .APB_AW(AW)) dut (
     .csr_clk(clk), .csr_rst_n(rst_n),
     .paddr(paddr), .psel(psel), .penable(penable), .pwrite(pwrite),
     .pwdata(pwdata), .pstrb(pstrb), .prdata(prdata), .pready(pready), .pslverr(pslverr),
     .ch_ctrl(ch_ctrl), .ch_stat(ch_stat), .ch_msi(ch_msi), .ch_irq(ch_irq),
-    .rd_engine_en(rd_en), .wr_engine_en(wr_en), .soft_reset(soft_reset)
+    .rd_engine_en(rd_en), .wr_engine_en(wr_en), .soft_reset(soft_reset),
+    .ats_ctrl_o(ats_ctrl), .atc_inval_o(atc_inval),
+    .atc_inval_pulse_o(atc_inval_pulse), .atc_stat_i(atc_stat)
   );
 
   // sticky doorbell capture
   logic db_seen [NCH];
   always @(posedge clk) for (int i = 0; i < NCH; i++) if (ch_ctrl[i].doorbell) db_seen[i] <= 1'b1;
+
+  logic inval_seen [1];
+  always @(posedge clk) if (atc_inval_pulse) inval_seen[0] <= 1'b1;
 
   int errors = 0;
 
@@ -69,6 +78,7 @@ module tb_csr;
   initial begin
     // reset
     psel = 0; penable = 0; pwrite = 0; paddr = 0; pwdata = 0; pstrb = 0;
+    inval_seen[0] = 0;
     for (int i = 0; i < NCH; i++) begin ch_stat[i] = '0; db_seen[i] = 0; end
     repeat (4) @(negedge clk);
     rst_n = 1;
@@ -133,6 +143,20 @@ module tb_csr;
     apb_write(20'h014, 32'h2);          // RD_INT_CLEAR bit1
     @(negedge clk);
     apb_read(20'h010, rd);              ck("global clear ch1", rd[1], 0);
+
+    // ---- extension: ATS & ATC registers ----
+    atc_stat.hit_count  = 16'h1234;
+    atc_stat.miss_count = 16'h5678;
+    apb_read(20'h9308, rd);             ck("ATC_STATUS", rd, 64'h5678_1234);
+
+    apb_write(20'h9300, 32'h0000_0001); // ATS_CTRL: ATS_EN=1
+    apb_read(20'h9300, rd);              ck("ATS_CTRL rb", rd, 64'h1);
+    ck("ats_ctrl_o", ats_ctrl, 1);
+
+    apb_write(20'h9304, 32'h1230_0007); // ATC_INVAL: trigger=1, global=1, pasid_all=1, pasid=3
+    ck("atc_inval_o", atc_inval, 64'h1230_0007);
+    repeat (2) @(negedge clk);
+    ck("atc_inval_pulse_o", inval_seen[0], 1);
 
     // ---- pslverr on undecoded ----
     @(negedge clk); psel=1; pwrite=0; paddr=20'hA000; penable=0;

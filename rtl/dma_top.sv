@@ -138,26 +138,37 @@ module dma_top (
     .pri_en       (1'b0)
   );
 
+  // ---- ATS/ATC CSR Interface Signals ----
+  logic [31:0]          ats_ctrl;
+  logic [31:0]          atc_inval;
+  logic                 atc_inval_pulse;
+  dma_pkg::atc_status_t atc_stat;
+  assign atc_stat = '0;
+
   // ---- CSR Register Block (Connected Directly to Top APB) ----
   csr_block #(.NUM_RD_CH(NUM_RD_CH), .NUM_WR_CH(NUM_WR_CH), .APB_AW(APB_AW)) u_csr (
-    .csr_clk      (csr_clk),
-    .csr_rst_n    (csr_rst_n),
-    .paddr        (s_apb_paddr),
-    .psel         (s_apb_psel),
-    .penable      (s_apb_penable),
-    .pwrite       (s_apb_pwrite),
-    .pwdata       (s_apb_pwdata),
-    .pstrb        (s_apb_pstrb),
-    .prdata       (s_apb_prdata),
-    .pready       (s_apb_pready),
-    .pslverr      (s_apb_pslverr),
-    .ch_ctrl      (ch_ctrl),
-    .ch_stat      (ch_stat),
-    .ch_msi       (ch_msi),
-    .ch_irq       (ch_irq),
-    .rd_engine_en (rd_en),
-    .wr_engine_en (wr_en),
-    .soft_reset   (soft_reset)
+    .csr_clk           (csr_clk),
+    .csr_rst_n         (csr_rst_n),
+    .paddr             (s_apb_paddr),
+    .psel              (s_apb_psel),
+    .penable           (s_apb_penable),
+    .pwrite            (s_apb_pwrite),
+    .pwdata            (s_apb_pwdata),
+    .pstrb             (s_apb_pstrb),
+    .prdata            (s_apb_prdata),
+    .pready            (s_apb_pready),
+    .pslverr           (s_apb_pslverr),
+    .ch_ctrl           (ch_ctrl),
+    .ch_stat           (ch_stat),
+    .ch_msi            (ch_msi),
+    .ch_irq            (ch_irq),
+    .rd_engine_en      (rd_en),
+    .wr_engine_en      (wr_en),
+    .soft_reset        (soft_reset),
+    .ats_ctrl_o        (ats_ctrl),
+    .atc_inval_o       (atc_inval),
+    .atc_inval_pulse_o (atc_inval_pulse),
+    .atc_stat_i        (atc_stat)
   );
 
 endmodule

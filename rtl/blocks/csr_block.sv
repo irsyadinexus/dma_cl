@@ -31,7 +31,12 @@ module csr_block #(
   // engine enables / soft reset
   output logic              rd_engine_en,
   output logic              wr_engine_en,
-  output logic              soft_reset
+  output logic              soft_reset,
+  // ATS & ATC subsystem controls
+  output logic [31:0]       ats_ctrl_o,
+  output logic [31:0]       atc_inval_o,
+  output logic              atc_inval_pulse_o,
+  input  dma_pkg::atc_status_t atc_stat_i
 );
   import dma_pkg::*;
 
@@ -124,6 +129,7 @@ module csr_block #(
   // ==========================================================================
   logic        rd_engine_en_r, wr_engine_en_r, soft_reset_r;
   logic [31:0] ats_ctrl_r, atc_inval_r, pri_ctrl_r, p2p_ctrl_r;
+  logic        atc_inval_pulse_r;
 
   logic        ch_en_r        [NUM_CH];
   logic [31:0] prefetch_r     [NUM_CH];
@@ -215,6 +221,7 @@ module csr_block #(
     if (!csr_rst_n) begin
       rd_engine_en_r <= 1'b0; wr_engine_en_r <= 1'b0; soft_reset_r <= 1'b0;
       ats_ctrl_r <= '0; atc_inval_r <= '0; pri_ctrl_r <= '0; p2p_ctrl_r <= '0;
+      atc_inval_pulse_r <= 1'b0;
       for (int g = 0; g < NUM_CH; g++) begin
         ch_en_r[g] <= 1'b0; prefetch_r[g] <= '0; handshake_r[g] <= '0;
         llp_lo_r[g] <= '0; llp_hi_r[g] <= '0; cycle_sync_r[g] <= '0;
@@ -233,6 +240,7 @@ module csr_block #(
       // doorbell pulse defaults low; soft_reset self-clears after one cycle
       for (int g = 0; g < NUM_CH; g++) db_pulse[g] <= 1'b0;
       soft_reset_r <= 1'b0;
+      atc_inval_pulse_r <= do_write && in_ext && (eoff == E_ATC_INVAL) && pwdata[0];
 
       // ---- common region writes ----
       if (do_write && in_common) begin
@@ -370,7 +378,7 @@ module csr_block #(
       else if (eoff == E_EXT_CAP)    rdata = CAP_VAL;
       else if (eoff == E_ATS_CTRL)   rdata = ats_ctrl_r;
       else if (eoff == E_ATC_INVAL)  rdata = atc_inval_r;
-      else if (eoff == E_ATC_STATUS) rdata = 32'h0; // driven by ATS subsys (TODO M4)
+      else if (eoff == E_ATC_STATUS) rdata = {atc_stat_i.miss_count, atc_stat_i.hit_count};
       else if (eoff == E_PRI_CTRL)   rdata = pri_ctrl_r;
       else if (eoff == E_PRI_STATUS) rdata = 32'h0; // driven by PRI engine (TODO M5)
       else if (eoff == E_P2P_CTRL)   rdata = p2p_ctrl_r;
@@ -388,9 +396,12 @@ module csr_block #(
   // ==========================================================================
   // Output assembly
   // ==========================================================================
-  assign rd_engine_en = rd_engine_en_r;
-  assign wr_engine_en = wr_engine_en_r;
-  assign soft_reset   = soft_reset_r;
+  assign rd_engine_en      = rd_engine_en_r;
+  assign wr_engine_en      = wr_engine_en_r;
+  assign soft_reset        = soft_reset_r;
+  assign ats_ctrl_o        = ats_ctrl_r;
+  assign atc_inval_o       = atc_inval_r;
+  assign atc_inval_pulse_o = atc_inval_pulse_r;
 
   always_comb begin
     for (int g = 0; g < NUM_CH; g++) begin
