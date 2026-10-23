@@ -67,8 +67,36 @@ module dma_top (
   assign ats_dn = '0;
 
   ch_ctrl_t      ch_ctrl [NUM_CH];
-  ch_stat_t      ch_stat [NUM_CH];
+  ch_stat_t      ch_stat_raw [NUM_CH];
+  ch_stat_t      ch_stat     [NUM_CH];
+  err_code_e     ch_err_sticky [NUM_CH];
+  logic [NUM_CH-1:0] fault_abort;
+  err_code_e         fault_err [NUM_CH];
   logic          rd_en, wr_en, soft_reset;
+
+  always_ff @(posedge core_clk or negedge core_rst_n) begin
+    if (!core_rst_n) begin
+      for (int i = 0; i < NUM_CH; i++) ch_err_sticky[i] <= ERR_NONE;
+    end else begin
+      for (int i = 0; i < NUM_CH; i++) begin
+        if (!ch_ctrl[i].enable) begin
+          ch_err_sticky[i] <= ERR_NONE;
+        end else if (fault_abort[i]) begin
+          ch_err_sticky[i] <= fault_err[i];
+        end
+      end
+    end
+  end
+
+  always_comb begin
+    for (int i = 0; i < NUM_CH; i++) begin
+      ch_stat[i] = ch_stat_raw[i];
+      if (fault_abort[i] || (ch_err_sticky[i] != ERR_NONE)) begin
+        ch_stat[i].err       = (ch_err_sticky[i] != ERR_NONE) ? ch_err_sticky[i] : fault_err[i];
+        ch_stat[i].abort_irq = fault_abort[i];
+      end
+    end
+  end
 
   // ---- Per-Channel Movers ----
   genvar g;
@@ -83,7 +111,7 @@ module dma_top (
         .axi_clk    (axi_clk),
         .axi_rst_n  (axi_rst_n),
         .ctrl       (ch_ctrl[g]),
-        .stat       (ch_stat[g]),
+        .stat       (ch_stat_raw[g]),
         .mm_m2s     (dev_mm_m2s[g]),
         .mm_s2m     (dev_mm_s2m[g]),
         .st_o       (dev_st_o[g]),
@@ -127,7 +155,7 @@ module dma_top (
   dma_pkg::atc_status_t atc_stat;
 
   // ---- ATS/PASID/PRI Subsystem (Milestone M4) ----
-  ats_pri_subsys u_ats (
+  ats_pri_subsys #(.NUM_CH(NUM_CH)) u_ats (
     .core_clk        (core_clk),
     .core_rst_n      (core_rst_n),
     .up_req          (arb_req),
@@ -144,7 +172,9 @@ module dma_top (
     .pri_en          (1'b0),
     .atc_inval_reg   (atc_inval),
     .atc_inval_pulse (atc_inval_pulse),
-    .atc_stat        (atc_stat)
+    .atc_stat        (atc_stat),
+    .fault_abort_o   (fault_abort),
+    .fault_err_o     (fault_err)
   );
 
   // ---- CSR Register Block (Connected Directly to Top APB) ----
