@@ -39,11 +39,11 @@
 - Consumes: Existing `hdma_elem_t`, `pcie_req_t`, `pcie_cpl_meta_t` definitions.
 - Produces: `TAGS_PER_CH`, `REORDER_BEATS_PER_CH`, `MAX_BURST_BEATS`, and tag status enums for channel reorder logic.
 
-- [ ] **Step 1: Inspect `rtl/dma_pkg.sv` and write the failing lint check for new types**
+- [x] **Step 1: Inspect `rtl/dma_pkg.sv` and write the failing lint check for new types**
 
 Run: `make lint` to verify current clean baseline.
 
-- [ ] **Step 2: Add parameters and tag tracking types to `rtl/dma_pkg.sv`**
+- [x] **Step 2: Add parameters and tag tracking types to `rtl/dma_pkg.sv`**
 
 In `rtl/dma_pkg.sv`, define:
 ```systemverilog
@@ -59,12 +59,12 @@ In `rtl/dma_pkg.sv`, define:
   } tag_state_e;
 ```
 
-- [ ] **Step 3: Run lint to verify cleanliness**
+- [x] **Step 3: Run lint to verify cleanliness**
 
 Run: `make lint && make lint-if`
 Expected: 0 errors, 0 warnings.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add rtl/dma_pkg.sv
@@ -83,7 +83,7 @@ git commit -m "feat(pkg): add M3 reorder buffer and tag scoreboard definitions"
 - Consumes: `host_cpl` bus, `dma_pkg::TAGS_PER_CH`, `dma_pkg::REORDER_BEATS`, `dma_pkg::MAX_BURST_BEATS`.
 - Produces: Tag-scorecard tracking, dual-port reorder RAM, and in-order AXI-MM write bursts with out-of-order `CplD` reassembly.
 
-- [ ] **Step 1: Write scoreboard and reorder RAM data structures in `dma_channel.sv`**
+- [x] **Step 1: Write scoreboard and reorder RAM data structures in `dma_channel.sv`**
 
 In `rtl/blocks/dma_channel.sv` under `g_h2c`:
 ```systemverilog
@@ -104,7 +104,7 @@ In `rtl/blocks/dma_channel.sv` under `g_h2c`:
   logic [$clog2(TAGS_PER_CH)-1:0] commit_tag_ptr;
 ```
 
-- [ ] **Step 2: Implement completion intake with RCB offset mapping**
+- [x] **Step 2: Implement completion intake with RCB offset mapping**
 
 Map incoming completion `cpl`:
 ```systemverilog
@@ -122,19 +122,19 @@ Map incoming completion `cpl`:
   end
 ```
 
-- [ ] **Step 3: Implement in-order commit engine driving AXI AW and W channels**
+- [x] **Step 3: Implement in-order commit engine driving AXI AW and W channels**
 
 When `scoreboard[commit_tag_ptr].state == TAG_COMMITTED`:
 1. Drive `mm_m2s.awaddr <= scoreboard[commit_tag_ptr].dar` and `awvalid <= 1'b1`.
 2. Sequentially read `reorder_ram[ram_slot_offset + beat]` and drive `mm_m2s.wdata`, `wvalid`, `wlast`.
 3. Wait for `bvalid && bready`, advance `commit_tag_ptr`, and mark tag `TAG_FREE`.
 
-- [ ] **Step 4: Verify with `make lint` and run `make sim-m2`**
+- [x] **Step 4: Verify with `make lint` and run `make sim-m2`**
 
 Run: `make lint && make sim-m2`
 Expected: PASS (all 7 M2 tests continue to pass with 0 errors).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add rtl/blocks/dma_channel.sv
@@ -153,7 +153,7 @@ git commit -m "feat(channel): add out-of-order completion reorder buffer and com
 - Consumes: `ctrl.lle`, `ctrl.llp_base`, `ctrl.doorbell`, `hdma_elem_t`.
 - Produces: Autonomous descriptor walking, cycle-bit toggling, link element jump, and `done_irq` generation on `CTRL_LIE`.
 
-- [ ] **Step 1: Define descriptor fetch FSM states and registers**
+- [x] **Step 1: Define descriptor fetch FSM states and registers**
 
 ```systemverilog
   typedef enum logic [3:0] {
@@ -171,7 +171,7 @@ git commit -m "feat(channel): add out-of-order completion reorder buffer and com
   hdma_elem_t  cur_elem;
 ```
 
-- [ ] **Step 2: Implement descriptor fetch MRd request and completion capture**
+- [x] **Step 2: Implement descriptor fetch MRd request and completion capture**
 
 When `ctrl.enable && ctrl.doorbell && ctrl.lle`:
 1. `llp_ptr <= ctrl.llp_base`, `expected_cb <= 1'b1`.
@@ -186,7 +186,7 @@ When `ctrl.enable && ctrl.doorbell && ctrl.lle`:
    cur_elem.dar_hi  = cpl.rdata[191:160];
    ```
 
-- [ ] **Step 3: Implement Cycle-Bit (`CB`), Link (`LLP`), and Toggle (`TCB`) Logic**
+- [x] **Step 3: Implement Cycle-Bit (`CB`), Link (`LLP`), and Toggle (`TCB`) Logic**
 
 1. If `cur_elem.control[CTRL_CB] != expected_cb`:
    - Software has not written more descriptors. Return to `ST_IDLE_M` gracefully.
@@ -200,16 +200,16 @@ When `ctrl.enable && ctrl.doorbell && ctrl.lle`:
    - If `cur_elem.control[CTRL_LIE] == 1'b1`, assert `done_irq_r <= 1'b1`.
    - Return to `ST_FETCH_REQ`.
 
-- [ ] **Step 4: Implement equivalent linked-list fetch for C2H (Write Channel)**
+- [x] **Step 4: Implement equivalent linked-list fetch for C2H (Write Channel)**
 
 Apply the same linked-list fetch and parsing logic to the C2H generator block in `dma_channel.sv`.
 
-- [ ] **Step 5: Run lint and verify regression**
+- [x] **Step 5: Run lint and verify regression**
 
 Run: `make lint && make sim-m2`
 Expected: 0 lint errors, all 7 M2 tests pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add rtl/blocks/dma_channel.sv
@@ -228,7 +228,7 @@ git commit -m "feat(channel): add scatter-gather linked-list fetch and parse FSM
 - Consumes: `ch_req[NUM_CH]`, `ch_ctrl[NUM_CH].qos[3:0]`.
 - Produces: Weighted round-robin grant with multi-beat burst protection and parallel completion demux.
 
-- [ ] **Step 1: Add per-channel credit tracking to `chan_arbiter.sv`**
+- [x] **Step 1: Add per-channel credit tracking to `chan_arbiter.sv`**
 
 ```systemverilog
   logic [7:0] credit [NUM_CH];
@@ -241,7 +241,7 @@ git commit -m "feat(channel): add scatter-gather linked-list fetch and parse FSM
   end
 ```
 
-- [ ] **Step 2: Implement WRR deficit selection logic**
+- [x] **Step 2: Implement WRR deficit selection logic**
 
 1. Scan channels starting from `rr_ptr`.
 2. Grant first channel with `req_active[i] && credit[i] > 0`.
@@ -250,11 +250,11 @@ git commit -m "feat(channel): add scatter-gather linked-list fetch and parse FSM
    - If `credit[gnt] == 1'b1` (or becomes 0), reload `credit[gnt] <= (ch_ctrl_qos[gnt] == 0) ? 8'd1 : {4'b0, ch_ctrl_qos[gnt]}` and advance `rr_ptr <= (gnt + 1) % NUM_CH`.
 4. If all requesting channels have `credit == 0`, immediately refresh all credits from `ch_ctrl_qos` in the same cycle.
 
-- [ ] **Step 3: Preserve atomic multi-beat burst lock**
+- [x] **Step 3: Preserve atomic multi-beat burst lock**
 
 Hold grant when `!ch_req[gnt].req.is_read && !ch_req[gnt].wlast`.
 
-- [ ] **Step 4: Upgrade completion demux to sliced channel ID**
+- [x] **Step 4: Upgrade completion demux to sliced channel ID**
 
 Route completion `m_cpl` to Channel `i`:
 ```systemverilog
@@ -267,12 +267,12 @@ Route completion `m_cpl` to Channel `i`:
   end
 ```
 
-- [ ] **Step 5: Run lint and verify regression**
+- [x] **Step 5: Run lint and verify regression**
 
 Run: `make lint && make sim-m2`
 Expected: PASS with 0 warnings.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add rtl/blocks/chan_arbiter.sv
@@ -291,20 +291,20 @@ git commit -m "feat(arbiter): implement weighted round-robin QoS and tag-sliced 
 - Consumes: All 8 channels (`NUM_RD_CH=4`, `NUM_WR_CH=4`).
 - Produces: Integrated top-level with WRR weight wiring and full 8-channel AXI-MM ports.
 
-- [ ] **Step 1: Wire per-channel QoS weights into `chan_arbiter`**
+- [x] **Step 1: Wire per-channel QoS weights into `chan_arbiter`**
 
 In `rtl/dma_top.sv`, pass `ch_ctrl[i].qos` to `u_arb`.
 
-- [ ] **Step 2: Ensure all 8 channels are connected to top-level ports and CSR arrays**
+- [x] **Step 2: Ensure all 8 channels are connected to top-level ports and CSR arrays**
 
 Verify `g_chan` generate loop instantiates 8 channels and connects `ch_ctrl[0..7]`, `ch_stat[0..7]`, `ch_irq[0..7]`, `dev_mm_m2s[0..7]`, and `dev_mm_s2m[0..7]`.
 
-- [ ] **Step 3: Run full lint check**
+- [x] **Step 3: Run full lint check**
 
 Run: `make lint && make lint-if`
 Expected: 0 errors, 0 warnings.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add rtl/dma_top.sv
@@ -324,11 +324,11 @@ git commit -m "feat(top): integrate 8-channel multi-channel scaling with WRR arb
 - Consumes: `dma_top`, `sim/axi_ram.sv`.
 - Produces: Directed verification suite with out-of-order & RCB-split completion responder, executing Tests 1 through 7.
 
-- [ ] **Step 1: Create `sim/tb_m3.sv` scaffolding and 8-channel RAM instances**
+- [x] **Step 1: Create `sim/tb_m3.sv` scaffolding and 8-channel RAM instances**
 
 Instantiate `dma_top` with 8 `axi_ram` instances for `dev_mm_m2s[0..7]`.
 
-- [ ] **Step 2: Implement Out-of-Order & Split Completion Engine in Root Complex BFM**
+- [x] **Step 2: Implement Out-of-Order & Split Completion Engine in Root Complex BFM**
 
 ```systemverilog
   // Completion queue structure for shuffling
@@ -344,7 +344,7 @@ Add support for:
 - Shuffling pending completions out of order.
 - Fragmenting requests into 64-byte chunks with separate completion beats.
 
-- [ ] **Step 3: Implement linked-list helper task `build_sg_elem`**
+- [x] **Step 3: Implement linked-list helper task `build_sg_elem`**
 
 ```systemverilog
   task automatic build_elem(
@@ -364,7 +364,7 @@ Add support for:
   endtask
 ```
 
-- [ ] **Step 4: Implement Tests 1 through 7 in `tb_m3.sv`**
+- [x] **Step 4: Implement Tests 1 through 7 in `tb_m3.sv`**
 
 1. **Test 1:** Contiguous 4-element H2C linked-list transfer.
 2. **Test 2:** Non-contiguous linked list with Link pointer (`LLP=1`).
@@ -374,7 +374,7 @@ Add support for:
 6. **Test 6:** Concurrent 8-channel operation (all 4 Read + 4 Write channels active).
 7. **Test 7:** Weighted Round-Robin (WRR) QoS verification (Ch0 weight 8 vs Ch1 weight 1).
 
-- [ ] **Step 5: Add `sim-m3` target to `Makefile`**
+- [x] **Step 5: Add `sim-m3` target to `Makefile`**
 
 ```makefile
 sim-m3:
@@ -384,17 +384,17 @@ sim-m3:
 	@./obj_dir/tb_m3
 ```
 
-- [ ] **Step 6: Run `make sim-m3` and verify all tests pass**
+- [x] **Step 6: Run `make sim-m3` and verify all tests pass**
 
 Run: `make sim-m3`
 Expected: `[tb_m3] ALL TESTS PASSED (0 errors)`.
 
-- [ ] **Step 7: Run complete regression suite**
+- [x] **Step 7: Run complete regression suite**
 
 Run: `make lint && make lint-if && make sim-csr && make sim-m2 && make sim-m3`
 Expected: All targets succeed with 0 errors and 0 warnings.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add sim/tb_m3.sv Makefile
