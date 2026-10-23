@@ -75,6 +75,7 @@ module dma_top (
   generate
     for (g = 0; g < NUM_CH; g++) begin : g_chan
       dma_channel #(
+        .CH_ID      (g),
         .IS_WRITE   (g >= NUM_RD_CH)
       ) u_chan (
         .core_clk   (core_clk),

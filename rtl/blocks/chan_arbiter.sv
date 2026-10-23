@@ -86,9 +86,9 @@ module chan_arbiter #(
     end
   end
 
-  // Completion demultiplexing by tag low bits
-  // In M2: tag[0] = channel 0 (H2C), tag[1] = channel 1 (C2H), etc.
-  wire [CH_WIDTH-1:0] cpl_dest_ch = CH_WIDTH'(int'(m_cpl.meta.tag) % NUM_CH);
+  // Completion demultiplexing by tag channel slice
+  // In M3: tag[9:8] = Read Channel ID (0..3)
+  wire [CH_WIDTH-1:0] cpl_dest_ch = CH_WIDTH'(m_cpl.meta.tag[9:8]);
 
   always_comb begin
     m_cpl_ready = ch_cpl_ready[cpl_dest_ch];

@@ -114,7 +114,7 @@ module tb_m2;
   endgenerate
 
   // PCIe BFM: Request & Completion handler
-  assign host_req_ready = 1'b1;
+  assign host_req_ready = !cpl_active || !host_req.req.is_read;
 
   logic [63:0]       cpl_addr;
   logic [TAG_W-1:0]  cpl_tag;

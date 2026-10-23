@@ -1,10 +1,12 @@
 // ============================================================================
-// dma_channel.sv — DMA Channel Data Mover (Register Mode, DATA_WIDTH=512).
+// dma_channel.sv — DMA Channel Data Mover (Register & Linked-List Mode).
+// DATA_WIDTH = 512, with Out-of-Order Completion Reorder Buffer on H2C.
 // IS_WRITE = 0: Read Channel (H2C) Host -> Device
 // IS_WRITE = 1: Write Channel (C2H) Device -> Host
 // ============================================================================
 module dma_channel #(
-  parameter bit IS_WRITE = 1'b0
+  parameter int unsigned CH_ID    = 0,
+  parameter bit          IS_WRITE = 1'b0
 ) (
   input  logic                   core_clk,
   input  logic                   core_rst_n,
@@ -53,116 +55,204 @@ module dma_channel #(
     if (!IS_WRITE) begin : g_h2c
       // ------------------------------------------------------------------------
       // H2C (Read Channel): Host -> Device Local Memory
+      // Out-of-Order Completion Reorder Buffer & Commit Engine
       // ------------------------------------------------------------------------
-      typedef enum logic [2:0] {
-        H_IDLE, H_REQ, H_CPL, H_BRESP, H_DONE
-      } h_state_e;
-      h_state_e state;
-      logic [7:0] w_beats_rem;
-      logic [3:0] done_cnt;
+      typedef struct packed {
+        tag_state_e  state;
+        logic [12:0] expected_bytes;
+        logic [12:0] bytes_received;
+        logic [6:0]  ram_slot_offset; // beat offset in reorder RAM
+        logic [63:0] dar;
+      } tag_entry_t;
 
-      assign cpl_ready = (state == H_CPL && !mm_m2s.wvalid) ? mm_s2m.wready : 1'b0;
+      tag_entry_t scoreboard [TAGS_PER_CH];
+      logic [DATA_WIDTH-1:0] reorder_ram [REORDER_BEATS];
 
+      logic [$clog2(TAGS_PER_CH)-1:0] alloc_tag_ptr;
+      logic [$clog2(TAGS_PER_CH)-1:0] commit_tag_ptr;
+      logic [31:0] req_rem_bytes;
+      logic [31:0] total_xfer_bytes;
+      logic [3:0]  done_cnt;
+
+      typedef enum logic [1:0] {
+        C_IDLE, C_AW, C_W, C_BRESP
+      } commit_state_e;
+      commit_state_e c_state;
+      logic [7:0] commit_beat_cnt;
+      logic [7:0] commit_burst_len;
+
+      assign cpl_ready = 1'b1; // Reorder buffer always sinks completions for allocated tags
+
+      // 4KB segmentation for H2C request pipeline
+      wire [12:0] h2c_bytes_to_4k = 13'h1000 - {1'b0, cur_sar[11:0]};
+      wire [12:0] h2c_seg_calc = (req_rem_bytes < {19'b0, h2c_bytes_to_4k}) ? req_rem_bytes[12:0] : h2c_bytes_to_4k;
+      wire [12:0] h2c_seg_len = (h2c_seg_calc > 13'd512) ? 13'd512 : h2c_seg_calc;
+
+      // Completion write port into reorder RAM
+      wire [$clog2(TAGS_PER_CH)-1:0] cpl_local_tag = cpl.meta.tag[$clog2(TAGS_PER_CH)-1:0];
+      always_ff @(posedge core_clk) begin
+        if (cpl.valid && cpl_ready) begin
+          int unsigned wr_idx;
+          wr_idx = int'(scoreboard[cpl_local_tag].ram_slot_offset) +
+                   (int'(scoreboard[cpl_local_tag].bytes_received) >> 6);
+          reorder_ram[7'(wr_idx)] <= cpl.rdata;
+        end
+      end
+
+      // Requester & Scoreboard FSM
       always_ff @(posedge core_clk or negedge core_rst_n) begin
         if (!core_rst_n) begin
-          state           <= H_IDLE;
-          cur_sar         <= '0;
-          cur_dar         <= '0;
-          rem_bytes       <= '0;
-          bytes_xferred_r <= '0;
-          done_irq_r      <= 1'b0;
-          done_cnt        <= '0;
-          ch_state_r      <= ST_IDLE;
-          w_beats_rem     <= '0;
-          req.valid       <= 1'b0;
-          req.req         <= '0;
-          req.wdata       <= '0;
-          req.wlast       <= 1'b0;
-          mm_m2s          <= '0;
+          cur_sar          <= '0;
+          cur_dar          <= '0;
+          rem_bytes        <= '0;
+          req_rem_bytes    <= '0;
+          total_xfer_bytes <= '0;
+          bytes_xferred_r  <= '0;
+          done_irq_r       <= 1'b0;
+          done_cnt         <= '0;
+          ch_state_r       <= ST_IDLE;
+          alloc_tag_ptr    <= '0;
+          commit_tag_ptr   <= '0;
+          c_state          <= C_IDLE;
+          commit_beat_cnt  <= '0;
+          commit_burst_len <= '0;
+          req.valid        <= 1'b0;
+          req.req          <= '0;
+          req.wdata        <= '0;
+          req.wlast        <= 1'b0;
+          mm_m2s           <= '0;
+          for (int i = 0; i < TAGS_PER_CH; i++) begin
+            scoreboard[i] <= '0;
+          end
         end else begin
+          // IRQ strobe
           if (done_cnt != 0) begin
             done_cnt   <= done_cnt - 1'b1;
             done_irq_r <= 1'b1;
           end else begin
             done_irq_r <= 1'b0;
           end
-          case (state)
-            H_IDLE: begin
-              ch_state_r <= ST_IDLE;
-              if (ctrl.enable && ctrl.doorbell && ctrl.xfer_size != 0) begin
-                cur_sar         <= ctrl.sar;
-                cur_dar         <= ctrl.dar;
-                rem_bytes       <= ctrl.xfer_size;
-                bytes_xferred_r <= '0;
-                ch_state_r      <= ST_RUN;
-                state           <= H_REQ;
+
+          // Completion status update in scoreboard
+          if (cpl.valid && cpl_ready) begin
+            if (scoreboard[cpl_local_tag].state == TAG_WAIT_CPL) begin
+              scoreboard[cpl_local_tag].bytes_received <= scoreboard[cpl_local_tag].bytes_received + 13'd64;
+              if ((scoreboard[cpl_local_tag].bytes_received + 13'd64 >= scoreboard[cpl_local_tag].expected_bytes) || cpl.meta.last) begin
+                scoreboard[cpl_local_tag].state <= TAG_COMMITTED;
+              end
+            end
+          end
+
+          // Start on doorbell
+          if (ch_state_r == ST_IDLE) begin
+            if (ctrl.enable && ctrl.doorbell && ctrl.xfer_size != 0) begin
+              cur_sar          <= ctrl.sar;
+              cur_dar          <= ctrl.dar;
+              req_rem_bytes    <= ctrl.xfer_size;
+              total_xfer_bytes <= ctrl.xfer_size;
+              rem_bytes        <= ctrl.xfer_size;
+              bytes_xferred_r  <= '0;
+              alloc_tag_ptr    <= '0;
+              commit_tag_ptr   <= '0;
+              ch_state_r       <= ST_RUN;
+              for (int i = 0; i < TAGS_PER_CH; i++) begin
+                scoreboard[i].state <= TAG_FREE;
+              end
+            end
+          end
+
+          // Issue Memory Reads (MRd)
+          if (ch_state_r == ST_RUN) begin
+            if (req_rem_bytes != 0 && scoreboard[alloc_tag_ptr].state == TAG_FREE && !req.valid) begin
+              req.valid         <= 1'b1;
+              req.req.is_read   <= 1'b1;
+              req.req.addr      <= cur_sar;
+              req.req.len_bytes <= h2c_seg_len;
+              req.req.tag       <= {CH_ID[1:0], 4'b0, alloc_tag_ptr};
+              req.req.first_be  <= 4'hF;
+              req.req.last_be   <= 4'hF;
+              req.wlast         <= 1'b0;
+            end
+
+            if (req.valid && req_ready) begin
+              req.valid <= 1'b0;
+              scoreboard[alloc_tag_ptr].state           <= TAG_WAIT_CPL;
+              scoreboard[alloc_tag_ptr].expected_bytes  <= req.req.len_bytes;
+              scoreboard[alloc_tag_ptr].bytes_received  <= '0;
+              scoreboard[alloc_tag_ptr].ram_slot_offset <= 7'(alloc_tag_ptr * MAX_BURST_BEATS);
+              scoreboard[alloc_tag_ptr].dar             <= cur_dar;
+
+              cur_sar       <= cur_sar + 64'(req.req.len_bytes);
+              cur_dar       <= cur_dar + 64'(req.req.len_bytes);
+              req_rem_bytes <= req_rem_bytes - 32'(req.req.len_bytes);
+              alloc_tag_ptr <= alloc_tag_ptr + 1'b1;
+            end
+          end
+
+          // In-Order Commit Engine (driving AXI-MM Master)
+          case (c_state)
+            C_IDLE: begin
+              if (scoreboard[commit_tag_ptr].state == TAG_COMMITTED) begin
+                commit_burst_len <= 8'((scoreboard[commit_tag_ptr].expected_bytes + 13'd63) >> 6) - 8'd1;
+                mm_m2s.awaddr    <= scoreboard[commit_tag_ptr].dar;
+                mm_m2s.awlen     <= 8'((scoreboard[commit_tag_ptr].expected_bytes + 13'd63) >> 6) - 8'd1;
+                mm_m2s.awsize    <= 3'b110; // 64 bytes
+                mm_m2s.awburst   <= 2'b01;  // INCR
+                mm_m2s.awvalid   <= 1'b1;
+                commit_beat_cnt  <= '0;
+                c_state          <= C_AW;
               end
             end
 
-            H_REQ: begin
-              req.valid        <= 1'b1;
-              req.req.is_read  <= 1'b1;
-              req.req.addr     <= cur_sar;
-              req.req.len_bytes<= seg_len;
-              req.req.tag      <= 10'h00; // Channel 0
-              req.req.first_be <= 4'hF;
-              req.req.last_be  <= 4'hF;
-              req.wlast        <= 1'b0;
-              w_beats_rem      <= burst_len;
-              if (req.valid && req_ready) begin
-                req.valid <= 1'b0;
-                // Issue AXI AW transaction
-                mm_m2s.awaddr  <= cur_dar;
-                mm_m2s.awlen   <= burst_len;
-                mm_m2s.awsize  <= 3'b110; // 64 bytes
-                mm_m2s.awburst <= 2'b01;  // INCR
-                mm_m2s.awvalid <= 1'b1;
-                state          <= H_CPL;
-              end
-            end
-
-            H_CPL: begin
+            C_AW: begin
               if (mm_m2s.awvalid && mm_s2m.awready) begin
                 mm_m2s.awvalid <= 1'b0;
-              end
-              if (cpl.valid && cpl_ready) begin
-                mm_m2s.wdata  <= cpl.rdata;
-                mm_m2s.wstrb  <= '1;
-                mm_m2s.wvalid <= 1'b1;
-                mm_m2s.wlast  <= (w_beats_rem == 0) || cpl.meta.last;
-                if (w_beats_rem != 0) w_beats_rem <= w_beats_rem - 1'b1;
-                if ((w_beats_rem == 0) || cpl.meta.last) begin
-                  mm_m2s.bready <= 1'b1;
-                  state <= H_BRESP;
-                end
-              end else if (mm_m2s.wvalid && mm_s2m.wready) begin
-                mm_m2s.wvalid <= 1'b0;
+                // Output first data beat
+                mm_m2s.wdata   <= reorder_ram[scoreboard[commit_tag_ptr].ram_slot_offset];
+                mm_m2s.wstrb   <= '1;
+                mm_m2s.wvalid  <= 1'b1;
+                mm_m2s.wlast   <= (commit_burst_len == 0);
+                c_state        <= C_W;
               end
             end
 
-            H_BRESP: begin
+            C_W: begin
+              if (mm_m2s.wvalid && mm_s2m.wready) begin
+                if (commit_beat_cnt == commit_burst_len) begin
+                  mm_m2s.wvalid <= 1'b0;
+                  mm_m2s.wlast  <= 1'b0;
+                  mm_m2s.bready <= 1'b1;
+                  c_state       <= C_BRESP;
+                end else begin
+                  commit_beat_cnt <= commit_beat_cnt + 1'b1;
+                  mm_m2s.wdata    <= reorder_ram[7'(scoreboard[commit_tag_ptr].ram_slot_offset + 7'(commit_beat_cnt) + 7'd1)];
+                  mm_m2s.wvalid   <= 1'b1;
+                  mm_m2s.wlast    <= (commit_beat_cnt + 1'b1 == commit_burst_len);
+                end
+              end
+            end
+
+            C_BRESP: begin
               if (mm_m2s.wvalid && mm_s2m.wready) mm_m2s.wvalid <= 1'b0;
               if (mm_m2s.bready && mm_s2m.bvalid) begin
                 mm_m2s.bready   <= 1'b0;
-                cur_sar         <= cur_sar + 64'(seg_len);
-                cur_dar         <= cur_dar + 64'(seg_len);
-                bytes_xferred_r <= bytes_xferred_r + 64'(seg_len);
-                rem_bytes       <= rem_bytes - 32'(seg_len);
-                if (rem_bytes <= 32'(seg_len)) begin
-                  state <= H_DONE;
+                bytes_xferred_r <= bytes_xferred_r + 64'(scoreboard[commit_tag_ptr].expected_bytes);
+                rem_bytes       <= (rem_bytes > 32'(scoreboard[commit_tag_ptr].expected_bytes)) ?
+                                   rem_bytes - 32'(scoreboard[commit_tag_ptr].expected_bytes) : 32'd0;
+                scoreboard[commit_tag_ptr].state <= TAG_FREE;
+                commit_tag_ptr <= commit_tag_ptr + 1'b1;
+
+                if (bytes_xferred_r + 64'(scoreboard[commit_tag_ptr].expected_bytes) >= 64'(total_xfer_bytes)) begin
+                  done_cnt   <= 4'd10;
+                  ch_state_r <= ST_IDLE;
+                  c_state    <= C_IDLE;
                 end else begin
-                  state <= H_REQ;
+                  c_state    <= C_IDLE;
                 end
               end
             end
 
-            H_DONE: begin
-              done_cnt   <= 4'd10;
-              ch_state_r <= ST_IDLE;
-              state      <= H_IDLE;
-            end
-
-            default: state <= H_IDLE;
+            default: c_state <= C_IDLE;
           endcase
         end
       end
