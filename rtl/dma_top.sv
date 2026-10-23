@@ -70,19 +70,29 @@ module dma_top (
   ch_stat_t      ch_stat_raw [NUM_CH];
   ch_stat_t      ch_stat     [NUM_CH];
   err_code_e     ch_err_sticky [NUM_CH];
+  logic [4:0]    abort_pulse_cnt [NUM_CH];
   logic [NUM_CH-1:0] fault_abort;
   err_code_e         fault_err [NUM_CH];
   logic          rd_en, wr_en, soft_reset;
 
   always_ff @(posedge core_clk or negedge core_rst_n) begin
     if (!core_rst_n) begin
-      for (int i = 0; i < NUM_CH; i++) ch_err_sticky[i] <= ERR_NONE;
+      for (int i = 0; i < NUM_CH; i++) begin
+        ch_err_sticky[i]   <= ERR_NONE;
+        abort_pulse_cnt[i] <= '0;
+      end
     end else begin
       for (int i = 0; i < NUM_CH; i++) begin
         if (!ch_ctrl[i].enable) begin
-          ch_err_sticky[i] <= ERR_NONE;
-        end else if (fault_abort[i]) begin
-          ch_err_sticky[i] <= fault_err[i];
+          ch_err_sticky[i]   <= ERR_NONE;
+          abort_pulse_cnt[i] <= '0;
+        end else begin
+          if (fault_abort[i]) begin
+            ch_err_sticky[i]   <= fault_err[i];
+            abort_pulse_cnt[i] <= 5'd16; // CDC pulse stretch across 100MHz csr_clk
+          end else if (abort_pulse_cnt[i] != 0) begin
+            abort_pulse_cnt[i] <= abort_pulse_cnt[i] - 1'b1;
+          end
         end
       end
     end
@@ -91,9 +101,10 @@ module dma_top (
   always_comb begin
     for (int i = 0; i < NUM_CH; i++) begin
       ch_stat[i] = ch_stat_raw[i];
-      if (fault_abort[i] || (ch_err_sticky[i] != ERR_NONE)) begin
+      if ((abort_pulse_cnt[i] != 0) || (ch_err_sticky[i] != ERR_NONE)) begin
         ch_stat[i].err       = (ch_err_sticky[i] != ERR_NONE) ? ch_err_sticky[i] : fault_err[i];
-        ch_stat[i].abort_irq = fault_abort[i];
+        ch_stat[i].abort_irq = (abort_pulse_cnt[i] != 0);
+        ch_stat[i].done_irq  = 1'b0;
       end
     end
   end

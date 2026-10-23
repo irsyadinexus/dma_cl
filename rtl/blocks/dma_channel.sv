@@ -219,6 +219,11 @@ module dma_channel #(
               req.req.tag       <= {CH_ID[2:0], 7'h7F};
               req.req.first_be  <= 4'hF;
               req.req.last_be   <= 4'hF;
+              req.req.pasid     <= ctrl.pasid;
+              req.req.pasid_en  <= ctrl.pasid_en;
+              req.req.tc        <= ctrl.tc;
+              req.req.relaxed   <= ctrl.ro;
+              req.req.at        <= AT_UNTRANSLATED;
               req.wlast         <= 1'b0;
               if (req.valid && req_ready) begin
                 req.valid <= 1'b0;
@@ -279,6 +284,11 @@ module dma_channel #(
                 req.req.tag       <= {CH_ID[2:0], 3'b0, alloc_tag_ptr};
                 req.req.first_be  <= 4'hF;
                 req.req.last_be   <= 4'hF;
+                req.req.pasid     <= ctrl.pasid;
+                req.req.pasid_en  <= ctrl.pasid_en;
+                req.req.tc        <= ctrl.tc;
+                req.req.relaxed   <= ctrl.ro;
+                req.req.at        <= AT_UNTRANSLATED;
                 req.wlast         <= 1'b0;
               end
 
@@ -479,6 +489,11 @@ module dma_channel #(
               req.req.tag       <= {CH_ID[2:0], 7'h7F};
               req.req.first_be  <= 4'hF;
               req.req.last_be   <= 4'hF;
+              req.req.pasid     <= ctrl.pasid;
+              req.req.pasid_en  <= ctrl.pasid_en;
+              req.req.tc        <= ctrl.tc;
+              req.req.relaxed   <= ctrl.ro;
+              req.req.at        <= AT_UNTRANSLATED;
               req.wlast         <= 1'b0;
               if (req.valid && req_ready) begin
                 req.valid <= 1'b0;
@@ -549,6 +564,11 @@ module dma_channel #(
                   req.req.tag      <= {CH_ID[2:0], 7'b0};
                   req.req.first_be <= 4'hF;
                   req.req.last_be  <= 4'hF;
+                  req.req.pasid    <= ctrl.pasid;
+                  req.req.pasid_en <= ctrl.pasid_en;
+                  req.req.tc       <= ctrl.tc;
+                  req.req.relaxed  <= ctrl.ro;
+                  req.req.at       <= AT_UNTRANSLATED;
                   req.wdata        <= (fifo_wr_ptr == 0) ? mm_s2m.rdata : fifo_data[0];
                   req.wlast        <= (burst_len == 0);
                   fifo_rd_ptr      <= 3'd1;

@@ -93,7 +93,8 @@ module ats_pri_subsys #(
     for (int i = 0; i < ATC_ENTRIES; i++) begin
       hit_mask[i] = atc_mem[i].valid &&
                     (atc_mem[i].vpn == req_vpn) &&
-                    (!atc_mem[i].pasid_en || (atc_mem[i].pasid == up_req.req.pasid));
+                    (atc_mem[i].pasid_en == up_req.req.pasid_en) &&
+                    (!up_req.req.pasid_en || (atc_mem[i].pasid == up_req.req.pasid));
       if (hit_mask[i]) begin
         atc_hit = 1'b1;
         match_entry = atc_mem[i];
@@ -137,7 +138,8 @@ module ats_pri_subsys #(
         end
       end
     end else if (state == T_WAIT && ats_dn.ats_rsp_valid && (ats_dn.ats_rsp_id == cur_req_id)) begin
-      if (!ats_dn.ats_rsp.fail && !ats_dn.ats_rsp.non_present) begin
+      if (!ats_dn.ats_rsp.fail && !ats_dn.ats_rsp.non_present &&
+          (skid_req.req.is_read ? ats_dn.ats_rsp.r : ats_dn.ats_rsp.w)) begin
         atc_mem[alloc_slot] <= '{
           valid:    1'b1,
           pasid_en: skid_req.req.pasid_en,
@@ -202,7 +204,8 @@ module ats_pri_subsys #(
         T_WAIT: begin
           if (ats_dn.ats_rsp_valid && (ats_dn.ats_rsp_id == cur_req_id)) begin
             cur_req_id <= cur_req_id + 1'b1;
-            if (ats_dn.ats_rsp.fail || ats_dn.ats_rsp.non_present) begin
+            if (ats_dn.ats_rsp.fail || ats_dn.ats_rsp.non_present ||
+                (skid_req.req.is_read ? !ats_dn.ats_rsp.r : !ats_dn.ats_rsp.w)) begin
               fault_ch    <= skid_req.req.tag[9:7];
               drain_fault <= !skid_req.req.is_read && !skid_req.wlast;
               state       <= T_FAULT;
