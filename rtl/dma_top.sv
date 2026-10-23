@@ -42,7 +42,11 @@ module dma_top (
 
   // ---- Interrupts & MSI Configuration ----
   output logic                 ch_irq         [dma_pkg::NUM_RD_CH + dma_pkg::NUM_WR_CH],
-  output dma_pkg::ch_msi_t     ch_msi         [dma_pkg::NUM_RD_CH + dma_pkg::NUM_WR_CH]
+  output dma_pkg::ch_msi_t     ch_msi         [dma_pkg::NUM_RD_CH + dma_pkg::NUM_WR_CH],
+
+  // ---- ATS/PRI Interface (Subsystem <-> Host IOMMU) ----
+  output dma_pkg::ats_pri_up_t ats_up,
+  input  dma_pkg::ats_pri_dn_t ats_dn
 );
   import dma_pkg::*;
 
@@ -61,10 +65,6 @@ module dma_top (
   pcie_cpl_bus_t arb_cpl;
   logic          arb_cpl_ready;
 
-  // Unused ATS sideband buses in M2
-  ats_pri_up_t   ats_up;
-  ats_pri_dn_t   ats_dn;
-  assign ats_dn = '0;
 
   ch_ctrl_t      ch_ctrl [NUM_CH];
   ch_stat_t      ch_stat_raw [NUM_CH];

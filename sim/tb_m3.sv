@@ -90,7 +90,9 @@ module tb_m3;
     .dev_st_i       (dev_st_i),
     .dev_st_i_ready (dev_st_i_ready),
     .ch_irq         (ch_irq),
-    .ch_msi         (ch_msi)
+    .ch_msi         (ch_msi),
+    .ats_up         (),
+    .ats_dn         ('0)
   );
 
   // 8 Device AXI RAM models
