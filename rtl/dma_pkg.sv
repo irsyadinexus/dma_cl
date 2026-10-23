@@ -25,6 +25,12 @@ package dma_pkg;
   localparam int unsigned REORDER_BYTES = 65536; // per active read channel
   localparam int unsigned LEN_W         = 13;    // <=4096 bytes/request (4KB rule)
 
+  // M3 Completion Reorder & Tag Allocator Parameters
+  localparam int unsigned TAGS_PER_CH       = 16;   // in-flight MRd tags per channel
+  localparam int unsigned MAX_BURST_BEATS   = 8;    // 512B / 64B = 8 beats max per MRd/MWr
+  localparam int unsigned REORDER_BEATS     = TAGS_PER_CH * MAX_BURST_BEATS; // 128 beats (8KB)
+  localparam int unsigned CPL_TIMEOUT_LIMIT = 65535;// watchdog cycles before ERR_CPL_TIMEOUT
+
   localparam int unsigned STRB_WIDTH    = DATA_WIDTH/8;
 
   // Build-time capability flags (reported via CAPABILITIES / EXT_CAP)
@@ -45,6 +51,13 @@ package dma_pkg;
   typedef enum logic [0:0] { DEV_AXI_MM = 1'b0, // first-class (on-card DDR)
                              DEV_AXI_ST = 1'b1  // AXI4-Stream extension
                            } dev_mode_e;
+
+  // Tag state for completion reassembly (M3)
+  typedef enum logic [1:0] {
+    TAG_FREE      = 2'b00,
+    TAG_WAIT_CPL  = 2'b01,
+    TAG_COMMITTED = 2'b10
+  } tag_state_e;
 
   // PCIe AT[1:0] field (Address Type) — ATS
   typedef enum logic [1:0] { AT_UNTRANSLATED = 2'b00,
