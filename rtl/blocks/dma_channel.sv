@@ -55,7 +55,7 @@ module dma_channel #(
     if (!IS_WRITE) begin : g_h2c
       // ------------------------------------------------------------------------
       // H2C (Read Channel): Host -> Device Local Memory
-      // Out-of-Order Completion Reorder Buffer & Commit Engine
+      // Out-of-Order Completion Reorder Buffer, Commit Engine, & Linked-List FSM
       // ------------------------------------------------------------------------
       typedef struct packed {
         tag_state_e  state;
@@ -81,6 +81,17 @@ module dma_channel #(
       logic [7:0] commit_beat_cnt;
       logic [7:0] commit_burst_len;
 
+      typedef enum logic [1:0] {
+        H_IDLE, H_FETCH_REQ, H_FETCH_WAIT, H_RUN
+      } h_fsm_e;
+      h_fsm_e h_fsm;
+
+      logic [63:0] llp_ptr;
+      logic        expected_cb;
+      hdma_elem_t  cur_elem;
+      logic        in_ll_mode;
+      logic        elem_lie;
+
       assign cpl_ready = 1'b1; // Reorder buffer always sinks completions for allocated tags
 
       // 4KB segmentation for H2C request pipeline
@@ -89,9 +100,11 @@ module dma_channel #(
       wire [12:0] h2c_seg_len = (h2c_seg_calc > 13'd512) ? 13'd512 : h2c_seg_calc;
 
       // Completion write port into reorder RAM
+      wire is_desc_cpl = (cpl.meta.tag == {CH_ID[2:0], 7'h7F});
       wire [$clog2(TAGS_PER_CH)-1:0] cpl_local_tag = cpl.meta.tag[$clog2(TAGS_PER_CH)-1:0];
+
       always_ff @(posedge core_clk) begin
-        if (cpl.valid && cpl_ready) begin
+        if (cpl.valid && cpl_ready && !is_desc_cpl) begin
           int unsigned wr_idx;
           wr_idx = int'(scoreboard[cpl_local_tag].ram_slot_offset) +
                    (int'(scoreboard[cpl_local_tag].bytes_received) >> 6);
@@ -99,7 +112,7 @@ module dma_channel #(
         end
       end
 
-      // Requester & Scoreboard FSM
+      // Requester, Descriptor Fetch & Scoreboard FSM
       always_ff @(posedge core_clk or negedge core_rst_n) begin
         if (!core_rst_n) begin
           cur_sar          <= '0;
@@ -116,6 +129,12 @@ module dma_channel #(
           c_state          <= C_IDLE;
           commit_beat_cnt  <= '0;
           commit_burst_len <= '0;
+          h_fsm            <= H_IDLE;
+          llp_ptr          <= '0;
+          expected_cb      <= 1'b1;
+          cur_elem         <= '0;
+          in_ll_mode       <= 1'b0;
+          elem_lie         <= 1'b0;
           req.valid        <= 1'b0;
           req.req          <= '0;
           req.wdata        <= '0;
@@ -133,8 +152,8 @@ module dma_channel #(
             done_irq_r <= 1'b0;
           end
 
-          // Completion status update in scoreboard
-          if (cpl.valid && cpl_ready) begin
+          // Completion status update in scoreboard (data completions)
+          if (cpl.valid && cpl_ready && !is_desc_cpl) begin
             if (scoreboard[cpl_local_tag].state == TAG_WAIT_CPL) begin
               scoreboard[cpl_local_tag].bytes_received <= scoreboard[cpl_local_tag].bytes_received + 13'd64;
               if ((scoreboard[cpl_local_tag].bytes_received + 13'd64 >= scoreboard[cpl_local_tag].expected_bytes) || cpl.meta.last) begin
@@ -143,51 +162,128 @@ module dma_channel #(
             end
           end
 
-          // Start on doorbell
-          if (ch_state_r == ST_IDLE) begin
-            if (ctrl.enable && ctrl.doorbell && ctrl.xfer_size != 0) begin
-              cur_sar          <= ctrl.sar;
-              cur_dar          <= ctrl.dar;
-              req_rem_bytes    <= ctrl.xfer_size;
-              total_xfer_bytes <= ctrl.xfer_size;
-              rem_bytes        <= ctrl.xfer_size;
-              bytes_xferred_r  <= '0;
-              alloc_tag_ptr    <= '0;
-              commit_tag_ptr   <= '0;
-              ch_state_r       <= ST_RUN;
-              for (int i = 0; i < TAGS_PER_CH; i++) begin
-                scoreboard[i].state <= TAG_FREE;
+          // Top-level channel state machine
+          case (h_fsm)
+            H_IDLE: begin
+              ch_state_r <= ST_IDLE;
+              if (ctrl.enable && ctrl.doorbell) begin
+                if (ctrl.lle) begin
+                  // Linked-list mode
+                  in_ll_mode  <= 1'b1;
+                  llp_ptr     <= ctrl.llp_base;
+                  expected_cb <= 1'b1;
+                  ch_state_r  <= ST_FETCH;
+                  h_fsm       <= H_FETCH_REQ;
+                end else if (ctrl.xfer_size != 0) begin
+                  // Register mode
+                  in_ll_mode       <= 1'b0;
+                  cur_sar          <= ctrl.sar;
+                  cur_dar          <= ctrl.dar;
+                  req_rem_bytes    <= ctrl.xfer_size;
+                  total_xfer_bytes <= ctrl.xfer_size;
+                  rem_bytes        <= ctrl.xfer_size;
+                  bytes_xferred_r  <= '0;
+                  alloc_tag_ptr    <= '0;
+                  commit_tag_ptr   <= '0;
+                  elem_lie         <= ctrl.lie;
+                  ch_state_r       <= ST_RUN;
+                  h_fsm            <= H_RUN;
+                  for (int i = 0; i < TAGS_PER_CH; i++) begin
+                    scoreboard[i].state <= TAG_FREE;
+                  end
+                end
               end
             end
-          end
 
-          // Issue Memory Reads (MRd)
-          if (ch_state_r == ST_RUN) begin
-            if (req_rem_bytes != 0 && scoreboard[alloc_tag_ptr].state == TAG_FREE && !req.valid) begin
+            H_FETCH_REQ: begin
+              ch_state_r        <= ST_FETCH;
               req.valid         <= 1'b1;
               req.req.is_read   <= 1'b1;
-              req.req.addr      <= cur_sar;
-              req.req.len_bytes <= h2c_seg_len;
-              req.req.tag       <= {CH_ID[1:0], 4'b0, alloc_tag_ptr};
+              req.req.addr      <= llp_ptr;
+              req.req.len_bytes <= 13'd64;
+              req.req.tag       <= {CH_ID[2:0], 7'h7F};
               req.req.first_be  <= 4'hF;
               req.req.last_be   <= 4'hF;
               req.wlast         <= 1'b0;
+              if (req.valid && req_ready) begin
+                req.valid <= 1'b0;
+                h_fsm     <= H_FETCH_WAIT;
+              end
             end
 
-            if (req.valid && req_ready) begin
-              req.valid <= 1'b0;
-              scoreboard[alloc_tag_ptr].state           <= TAG_WAIT_CPL;
-              scoreboard[alloc_tag_ptr].expected_bytes  <= req.req.len_bytes;
-              scoreboard[alloc_tag_ptr].bytes_received  <= '0;
-              scoreboard[alloc_tag_ptr].ram_slot_offset <= 7'(alloc_tag_ptr * MAX_BURST_BEATS);
-              scoreboard[alloc_tag_ptr].dar             <= cur_dar;
+            H_FETCH_WAIT: begin
+              ch_state_r <= ST_FETCH;
+              if (cpl.valid && is_desc_cpl) begin
+                // Unpack 24-byte descriptor
+                cur_elem.control <= cpl.rdata[31:0];
+                cur_elem.size    <= cpl.rdata[63:32];
+                cur_elem.sar_lo  <= cpl.rdata[95:64];
+                cur_elem.sar_hi  <= cpl.rdata[127:96];
+                cur_elem.dar_lo  <= cpl.rdata[159:128];
+                cur_elem.dar_hi  <= cpl.rdata[191:160];
 
-              cur_sar       <= cur_sar + 64'(req.req.len_bytes);
-              cur_dar       <= cur_dar + 64'(req.req.len_bytes);
-              req_rem_bytes <= req_rem_bytes - 32'(req.req.len_bytes);
-              alloc_tag_ptr <= alloc_tag_ptr + 1'b1;
+                // Check ownership and element type
+                if (cpl.rdata[CTRL_CB] != expected_cb) begin
+                  // Ownership belongs to software — end of list
+                  ch_state_r <= ST_IDLE;
+                  h_fsm      <= H_IDLE;
+                end else if (cpl.rdata[CTRL_LLP] == 1'b1) begin
+                  // Link element: jump to next list pointer
+                  llp_ptr <= {cpl.rdata[127:96], cpl.rdata[95:64]};
+                  if (cpl.rdata[CTRL_TCB] == 1'b1) begin
+                    expected_cb <= ~expected_cb;
+                  end
+                  h_fsm <= H_FETCH_REQ;
+                end else begin
+                  // Data element
+                  cur_sar          <= {cpl.rdata[127:96], cpl.rdata[95:64]};
+                  cur_dar          <= {cpl.rdata[191:160], cpl.rdata[159:128]};
+                  req_rem_bytes    <= cpl.rdata[63:32];
+                  total_xfer_bytes <= cpl.rdata[63:32];
+                  rem_bytes        <= cpl.rdata[63:32];
+                  elem_lie         <= cpl.rdata[CTRL_LIE];
+                  alloc_tag_ptr    <= '0;
+                  commit_tag_ptr   <= '0;
+                  ch_state_r       <= ST_RUN;
+                  h_fsm            <= H_RUN;
+                  for (int i = 0; i < TAGS_PER_CH; i++) begin
+                    scoreboard[i].state <= TAG_FREE;
+                  end
+                end
+              end
             end
-          end
+
+            H_RUN: begin
+              ch_state_r <= ST_RUN;
+              // Issue Memory Reads (MRd) for data payload
+              if (req_rem_bytes != 0 && scoreboard[alloc_tag_ptr].state == TAG_FREE && !req.valid) begin
+                req.valid         <= 1'b1;
+                req.req.is_read   <= 1'b1;
+                req.req.addr      <= cur_sar;
+                req.req.len_bytes <= h2c_seg_len;
+                req.req.tag       <= {CH_ID[2:0], 3'b0, alloc_tag_ptr};
+                req.req.first_be  <= 4'hF;
+                req.req.last_be   <= 4'hF;
+                req.wlast         <= 1'b0;
+              end
+
+              if (req.valid && req_ready) begin
+                req.valid <= 1'b0;
+                scoreboard[alloc_tag_ptr].state           <= TAG_WAIT_CPL;
+                scoreboard[alloc_tag_ptr].expected_bytes  <= req.req.len_bytes;
+                scoreboard[alloc_tag_ptr].bytes_received  <= '0;
+                scoreboard[alloc_tag_ptr].ram_slot_offset <= 7'(alloc_tag_ptr * MAX_BURST_BEATS);
+                scoreboard[alloc_tag_ptr].dar             <= cur_dar;
+
+                cur_sar       <= cur_sar + 64'(req.req.len_bytes);
+                cur_dar       <= cur_dar + 64'(req.req.len_bytes);
+                req_rem_bytes <= req_rem_bytes - 32'(req.req.len_bytes);
+                alloc_tag_ptr <= alloc_tag_ptr + 1'b1;
+              end
+            end
+
+            default: h_fsm <= H_IDLE;
+          endcase
 
           // In-Order Commit Engine (driving AXI-MM Master)
           case (c_state)
@@ -243,9 +339,22 @@ module dma_channel #(
                 commit_tag_ptr <= commit_tag_ptr + 1'b1;
 
                 if (bytes_xferred_r + 64'(scoreboard[commit_tag_ptr].expected_bytes) >= 64'(total_xfer_bytes)) begin
-                  done_cnt   <= 4'd10;
-                  ch_state_r <= ST_IDLE;
-                  c_state    <= C_IDLE;
+                  if (elem_lie) begin
+                    done_cnt   <= 4'd10;
+                    done_irq_r <= 1'b1;
+                  end
+                  if (in_ll_mode) begin
+                    // Advance to next descriptor in memory
+                    llp_ptr    <= llp_ptr + 64'd24;
+                    ch_state_r <= ST_FETCH;
+                    h_fsm      <= H_FETCH_REQ;
+                    c_state    <= C_IDLE;
+                  end else begin
+                    done_cnt   <= 4'd10;
+                    ch_state_r <= ST_IDLE;
+                    h_fsm      <= H_IDLE;
+                    c_state    <= C_IDLE;
+                  end
                 end else begin
                   c_state    <= C_IDLE;
                 end
@@ -259,9 +368,10 @@ module dma_channel #(
     end else begin : g_c2h
       // ------------------------------------------------------------------------
       // C2H (Write Channel): Device Local Memory -> Host
+      // Linked-List Engine & Data Mover
       // ------------------------------------------------------------------------
       typedef enum logic [2:0] {
-        C_IDLE, C_AR, C_STG, C_MWR, C_NEXT, C_DONE
+        C_IDLE, C_FETCH_REQ, C_FETCH_WAIT, C_AR, C_STG, C_MWR, C_NEXT
       } c_state_e;
       c_state_e state;
       logic [7:0] r_beats_rem;
@@ -269,7 +379,14 @@ module dma_channel #(
       logic [2:0]            fifo_wr_ptr, fifo_rd_ptr;
       logic [3:0]            done_cnt;
 
-      assign cpl_ready = 1'b0;
+      logic [63:0] llp_ptr;
+      logic        expected_cb;
+      hdma_elem_t  cur_elem;
+      logic        in_ll_mode;
+      logic        elem_lie;
+
+      assign cpl_ready = (state == C_FETCH_WAIT);
+      wire is_c2h_desc_cpl = (cpl.meta.tag == {CH_ID[2:0], 7'h7F});
 
       always_ff @(posedge core_clk or negedge core_rst_n) begin
         if (!core_rst_n) begin
@@ -284,6 +401,11 @@ module dma_channel #(
           r_beats_rem     <= '0;
           fifo_wr_ptr     <= '0;
           fifo_rd_ptr     <= '0;
+          llp_ptr         <= '0;
+          expected_cb     <= 1'b1;
+          cur_elem        <= '0;
+          in_ll_mode      <= 1'b0;
+          elem_lie        <= 1'b0;
           req.valid       <= 1'b0;
           req.req         <= '0;
           req.wdata       <= '0;
@@ -299,17 +421,74 @@ module dma_channel #(
           case (state)
             C_IDLE: begin
               ch_state_r <= ST_IDLE;
-              if (ctrl.enable && ctrl.doorbell && ctrl.xfer_size != 0) begin
-                cur_sar         <= ctrl.sar;
-                cur_dar         <= ctrl.dar;
-                rem_bytes       <= ctrl.xfer_size;
-                bytes_xferred_r <= '0;
-                ch_state_r      <= ST_RUN;
-                state           <= C_AR;
+              if (ctrl.enable && ctrl.doorbell) begin
+                if (ctrl.lle) begin
+                  in_ll_mode  <= 1'b1;
+                  llp_ptr     <= ctrl.llp_base;
+                  expected_cb <= 1'b1;
+                  ch_state_r  <= ST_FETCH;
+                  state       <= C_FETCH_REQ;
+                end else if (ctrl.xfer_size != 0) begin
+                  in_ll_mode      <= 1'b0;
+                  cur_sar         <= ctrl.sar;
+                  cur_dar         <= ctrl.dar;
+                  rem_bytes       <= ctrl.xfer_size;
+                  bytes_xferred_r <= '0;
+                  elem_lie        <= ctrl.lie;
+                  ch_state_r      <= ST_RUN;
+                  state           <= C_AR;
+                end
+              end
+            end
+
+            C_FETCH_REQ: begin
+              ch_state_r        <= ST_FETCH;
+              req.valid         <= 1'b1;
+              req.req.is_read   <= 1'b1;
+              req.req.addr      <= llp_ptr;
+              req.req.len_bytes <= 13'd64;
+              req.req.tag       <= {CH_ID[2:0], 7'h7F};
+              req.req.first_be  <= 4'hF;
+              req.req.last_be   <= 4'hF;
+              req.wlast         <= 1'b0;
+              if (req.valid && req_ready) begin
+                req.valid <= 1'b0;
+                state     <= C_FETCH_WAIT;
+              end
+            end
+
+            C_FETCH_WAIT: begin
+              ch_state_r <= ST_FETCH;
+              if (cpl.valid && is_c2h_desc_cpl) begin
+                cur_elem.control <= cpl.rdata[31:0];
+                cur_elem.size    <= cpl.rdata[63:32];
+                cur_elem.sar_lo  <= cpl.rdata[95:64];
+                cur_elem.sar_hi  <= cpl.rdata[127:96];
+                cur_elem.dar_lo  <= cpl.rdata[159:128];
+                cur_elem.dar_hi  <= cpl.rdata[191:160];
+
+                if (cpl.rdata[CTRL_CB] != expected_cb) begin
+                  ch_state_r <= ST_IDLE;
+                  state      <= C_IDLE;
+                end else if (cpl.rdata[CTRL_LLP] == 1'b1) begin
+                  llp_ptr <= {cpl.rdata[127:96], cpl.rdata[95:64]};
+                  if (cpl.rdata[CTRL_TCB] == 1'b1) begin
+                    expected_cb <= ~expected_cb;
+                  end
+                  state <= C_FETCH_REQ;
+                end else begin
+                  cur_sar    <= {cpl.rdata[127:96], cpl.rdata[95:64]};
+                  cur_dar    <= {cpl.rdata[191:160], cpl.rdata[159:128]};
+                  rem_bytes  <= cpl.rdata[63:32];
+                  elem_lie   <= cpl.rdata[CTRL_LIE];
+                  ch_state_r <= ST_RUN;
+                  state      <= C_AR;
+                end
               end
             end
 
             C_AR: begin
+              ch_state_r     <= ST_RUN;
               mm_m2s.araddr  <= cur_sar;
               mm_m2s.arlen   <= burst_len;
               mm_m2s.arsize  <= 3'b110;
@@ -338,7 +517,7 @@ module dma_channel #(
                   req.req.is_read  <= 1'b0;
                   req.req.addr     <= cur_dar;
                   req.req.len_bytes<= seg_len;
-                  req.req.tag      <= 10'h01; // Channel 1
+                  req.req.tag      <= {CH_ID[2:0], 7'b0};
                   req.req.first_be <= 4'hF;
                   req.req.last_be  <= 4'hF;
                   req.wdata        <= (fifo_wr_ptr == 0) ? mm_s2m.rdata : fifo_data[0];
@@ -372,16 +551,22 @@ module dma_channel #(
               bytes_xferred_r <= bytes_xferred_r + 64'(seg_len);
               rem_bytes       <= rem_bytes - 32'(seg_len);
               if (rem_bytes <= 32'(seg_len)) begin
-                state <= C_DONE;
+                if (elem_lie) begin
+                  done_cnt   <= 4'd10;
+                  done_irq_r <= 1'b1;
+                end
+                if (in_ll_mode) begin
+                  llp_ptr    <= llp_ptr + 64'd24;
+                  ch_state_r <= ST_FETCH;
+                  state      <= C_FETCH_REQ;
+                end else begin
+                  done_cnt   <= 4'd10;
+                  ch_state_r <= ST_IDLE;
+                  state      <= C_IDLE;
+                end
               end else begin
                 state <= C_AR;
               end
-            end
-
-            C_DONE: begin
-              done_cnt   <= 4'd10;
-              ch_state_r <= ST_IDLE;
-              state      <= C_IDLE;
             end
 
             default: state <= C_IDLE;
