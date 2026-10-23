@@ -20,7 +20,7 @@ package dma_pkg;
   localparam int unsigned TAG_W         = 10;   // 10-bit extended tags
   localparam int unsigned MAX_TAGS      = (1 << TAG_W);
   localparam int unsigned PASID_W       = 20;
-  localparam int unsigned ATC_ENTRIES   = 1024;
+  localparam int unsigned ATC_ENTRIES   = 64;   // 64-entry fully associative ATC (M4)
   localparam int unsigned PRI_CONTEXTS  = 64;
   localparam int unsigned REORDER_BYTES = 65536; // per active read channel
   localparam int unsigned LEN_W         = 13;    // <=4096 bytes/request (4KB rule)
@@ -146,6 +146,24 @@ package dma_pkg;
     logic                non_present;// -> trigger PRI page request
     logic                fail;       // hard failure -> abort
   } ats_rsp_t;
+
+  // ATC (Device TLB) configuration and structures
+
+  typedef struct packed {
+    logic        valid;
+    logic        pasid_en;
+    logic [19:0] pasid;
+    logic [51:0] vpn;         // Virtual Page Number: addr[63:12]
+    logic [51:0] ppn;         // Physical Page Number: trans_addr[63:12]
+    logic        r_perm;      // Read permission allowed
+    logic        w_perm;      // Write permission allowed
+    logic        priv;        // Privileged access allowed
+  } atc_entry_t;
+
+  typedef struct packed {
+    logic [15:0] hit_count;
+    logic [15:0] miss_count;
+  } atc_status_t;
 
   // ===========================================================================
   // Synthesizable module-boundary bundles.

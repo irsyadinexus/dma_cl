@@ -12,5 +12,6 @@ module lint_top;
 
   // touch a package symbol so the package is elaborated
   dma_pkg::err_code_e e;
+  dma_pkg::atc_entry_t test_atc;
   initial e = dma_pkg::ERR_NONE;
 endmodule
