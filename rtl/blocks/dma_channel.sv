@@ -87,6 +87,7 @@ module dma_channel #(
       h_fsm_e h_fsm;
 
       logic [63:0] llp_ptr;
+      logic [63:0] last_llp_base;
       logic        expected_cb;
       hdma_elem_t  cur_elem;
       logic        in_ll_mode;
@@ -131,6 +132,7 @@ module dma_channel #(
           commit_burst_len <= '0;
           h_fsm            <= H_IDLE;
           llp_ptr          <= '0;
+          last_llp_base    <= '0;
           expected_cb      <= 1'b1;
           cur_elem         <= '0;
           in_ll_mode       <= 1'b0;
@@ -143,6 +145,16 @@ module dma_channel #(
           for (int i = 0; i < TAGS_PER_CH; i++) begin
             scoreboard[i] <= '0;
           end
+        end else if (!ctrl.enable) begin
+          ch_state_r    <= ST_IDLE;
+          h_fsm         <= H_IDLE;
+          in_ll_mode    <= 1'b0;
+          expected_cb   <= 1'b1;
+          last_llp_base <= '0;
+          done_irq_r    <= 1'b0;
+          done_cnt      <= '0;
+          req.valid     <= 1'b0;
+          c_state       <= C_IDLE;
         end else begin
           // IRQ strobe
           if (done_cnt != 0) begin
@@ -169,9 +181,12 @@ module dma_channel #(
               if (ctrl.enable && ctrl.doorbell) begin
                 if (ctrl.lle) begin
                   // Linked-list mode
+                  if (!in_ll_mode || (ctrl.llp_base != last_llp_base)) begin
+                    llp_ptr       <= ctrl.llp_base;
+                    last_llp_base <= ctrl.llp_base;
+                    expected_cb   <= 1'b1;
+                  end
                   in_ll_mode  <= 1'b1;
-                  llp_ptr     <= ctrl.llp_base;
-                  expected_cb <= 1'b1;
                   ch_state_r  <= ST_FETCH;
                   h_fsm       <= H_FETCH_REQ;
                 end else if (ctrl.xfer_size != 0) begin
@@ -338,7 +353,7 @@ module dma_channel #(
                 scoreboard[commit_tag_ptr].state <= TAG_FREE;
                 commit_tag_ptr <= commit_tag_ptr + 1'b1;
 
-                if (bytes_xferred_r + 64'(scoreboard[commit_tag_ptr].expected_bytes) >= 64'(total_xfer_bytes)) begin
+                if (rem_bytes <= 32'(scoreboard[commit_tag_ptr].expected_bytes)) begin
                   if (elem_lie) begin
                     done_cnt   <= 4'd10;
                     done_irq_r <= 1'b1;
@@ -380,6 +395,7 @@ module dma_channel #(
       logic [3:0]            done_cnt;
 
       logic [63:0] llp_ptr;
+      logic [63:0] last_llp_base;
       logic        expected_cb;
       hdma_elem_t  cur_elem;
       logic        in_ll_mode;
@@ -402,6 +418,7 @@ module dma_channel #(
           fifo_wr_ptr     <= '0;
           fifo_rd_ptr     <= '0;
           llp_ptr         <= '0;
+          last_llp_base   <= '0;
           expected_cb     <= 1'b1;
           cur_elem        <= '0;
           in_ll_mode      <= 1'b0;
@@ -411,6 +428,15 @@ module dma_channel #(
           req.wdata       <= '0;
           req.wlast       <= 1'b0;
           mm_m2s          <= '0;
+        end else if (!ctrl.enable) begin
+          ch_state_r    <= ST_IDLE;
+          state         <= C_IDLE;
+          in_ll_mode    <= 1'b0;
+          expected_cb   <= 1'b1;
+          last_llp_base <= '0;
+          done_irq_r    <= 1'b0;
+          done_cnt      <= '0;
+          req.valid     <= 1'b0;
         end else begin
           if (done_cnt != 0) begin
             done_cnt   <= done_cnt - 1'b1;
@@ -423,9 +449,12 @@ module dma_channel #(
               ch_state_r <= ST_IDLE;
               if (ctrl.enable && ctrl.doorbell) begin
                 if (ctrl.lle) begin
+                  if (!in_ll_mode || (ctrl.llp_base != last_llp_base)) begin
+                    llp_ptr       <= ctrl.llp_base;
+                    last_llp_base <= ctrl.llp_base;
+                    expected_cb   <= 1'b1;
+                  end
                   in_ll_mode  <= 1'b1;
-                  llp_ptr     <= ctrl.llp_base;
-                  expected_cb <= 1'b1;
                   ch_state_r  <= ST_FETCH;
                   state       <= C_FETCH_REQ;
                 end else if (ctrl.xfer_size != 0) begin

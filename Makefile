@@ -22,7 +22,14 @@ RTL     := $(PKG) $(BLOCKS) $(TOP)
 # on these for anything but its not-yet-consumed storage regs.
 SKEL_WAIVE := -Wno-UNUSEDSIGNAL -Wno-UNDRIVEN -Wno-UNUSEDPARAM
 
-.PHONY: lint lint-if lint-strict sim-csr sim-m2 synth-csr clean
+.PHONY: lint lint-if lint-strict sim-csr sim-m2 sim-m3 synth-csr clean
+
+# Milestone M3 directed simulation
+sim-m3:
+	verilator --binary -sv --timing $(SKEL_WAIVE) \
+	  -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
+	  $(RTL) sim/axi_ram.sv sim/tb_m3.sv --top-module tb_m3 -o tb_m3
+	@./obj_dir/tb_m3
 
 # Milestone M2 directed simulation
 sim-m2:
